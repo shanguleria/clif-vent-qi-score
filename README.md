@@ -227,6 +227,16 @@ Stage 1 resolves its input in three tiers and reports which it used:
 | 3 | `code/03_build_panel.py` | `panel/contributions.parquet` + `final_no_phi/unit_period_panel.{csv,parquet}` |
 | 4 | `code/04_exposure_assignment.py` | `exposure/` — per-patient exposure, long and primary-cell, with leave-one-out |
 | 5 | `code/05_verify_equivalence.py` | `final_no_phi/verification.json` — cross-run equivalence vs the dashboard's persisted output |
+| 6 | `code/06_compare_tiers.py` | `tier_comparison/` — on demand, proves a cold build reproduces the cached-tier panel exactly |
+
+Stages 0-5 run on every build via the runner. Stage 6 is a verification tool invoked manually
+around a `--rebuild` run:
+
+```bash
+.venv/bin/python code/06_compare_tiers.py --site uchicago --snapshot
+./run_scores.sh --site uchicago --rebuild
+.venv/bin/python code/06_compare_tiers.py --site uchicago --compare
+```
 
 ---
 
@@ -248,11 +258,14 @@ clif-vent-qi-score/
 │   ├── cohort_source.py        # stage-cache validation / cold upstream build / hard fail
 │   ├── attribution.py          # ICU intervals by location_name; hour + day attribution
 │   └── scoring.py              # pooled rates, composite, leave-one-out
-├── code/                       # 00..05, each standalone-runnable
-├── tests/test_scoring.py       # synthetic frames, no CLIF data
+├── code/                       # 00..06, each standalone-runnable
+├── tests/                      # synthetic frames, no CLIF data
+│   ├── test_scoring.py         #   pooled rates, composite, leave-one-out, attribution
+│   └── test_cohort_source.py   #   stage-cache completeness + decision matching
 ├── docs/METHODS.md             # definitions, deviations, known caveats
 └── output/<site>/              # gitignored
     ├── intermediate_phi/       #   row-level — never shared
+    ├── upstream_build/         #   stage cache from a cold build — never shared
     └── final_no_phi/           #   the panel + verification
 ```
 
