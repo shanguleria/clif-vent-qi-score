@@ -1,0 +1,49 @@
+# =============================================================================
+# Site-wide decisions, shared by every dashboard
+# =============================================================================
+# The platform reads these before any dashboard runs: encounter linking and the
+# adult age cutoff shape the encounters every dashboard starts from. Each
+# dashboard's own file (respiratory.yaml, ...) adds its choices after these,
+# and every dashboard page shows both. A dashboard file may not change a value
+# set here; change it here, and rebuild every dashboard.
+#
+# Each decision has an id, label, value, display, alternatives and source,
+# as in the dashboard files. Record why you changed a default under `changelog`.
+# =============================================================================
+
+version: 1
+
+shared:
+  - id: age_min
+    label: Age
+    value: 18
+    display: Age ≥ 18 at admission
+    alternatives: []
+    source: CLIF convention (adult ICU)
+
+  - id: stitch_hours
+    label: Encounter linking
+    value: 6
+    display: Hospitalizations < 6 h apart are linked (clifpy stitch_encounters)
+    alternatives: [No linking, 12 h window]
+    source: clifpy default
+
+  - id: outliers
+    label: Outlier handling
+    value: clifpy_thresholds
+    display: Values outside clifpy outlier_config.yaml ranges set to missing before any metric is computed
+    alternatives: [Winsorize]
+    source: clifpy outlier handling
+
+  - id: time_zone
+    label: Days and months
+    value: site_local
+    display: Grouped in the site time zone from config.yaml (CLIF stores UTC)
+    alternatives: [UTC]
+    source: CLIF convention
+
+changelog:
+  - date: 2026-10-19
+    change: Site-wide decisions moved here from decisions.yaml so that every dashboard shares them
+  - date: 2026-10-20
+    change: "Removed small_cell_n: groups with n < 11 are no longer greyed or flagged. The cutoff is a privacy convention for sharing outside a site, and these dashboards stay inside it."

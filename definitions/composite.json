@@ -1,0 +1,48 @@
+{
+  "_comment": "Composite score specification. A score is a weighted mean of per-metric pooled rates, rescaled to 0-100. Consumers MUST iterate the keys of each score's `weights` map rather than a hardcoded metric list, so adding a metric here is never a silent no-op. `metric` names must match the per-metric record keys emitted by 03_metric_records.py.",
+  "definition_version": "vent-qi-score-v1",
+
+  "metrics": {
+    "ltvv": {
+      "label": "Low tidal volume ventilation (<= 8 mL/kg PBW)",
+      "denominator_unit": "IMV hours",
+      "direction": "higher",
+      "upstream_decision_key": "ltvv"
+    },
+    "sat": {
+      "label": "Spontaneous awakening trial on eligible vent-days",
+      "denominator_unit": "eligible vent-days",
+      "direction": "higher",
+      "upstream_decision_key": "sat"
+    },
+    "sbt": {
+      "label": "Spontaneous breathing trial on eligible vent-days",
+      "denominator_unit": "eligible vent-days",
+      "direction": "higher",
+      "upstream_decision_key": "sbt"
+    },
+    "prone_12h": {
+      "label": "Proned within 12 h of enrollment",
+      "denominator_unit": "PROSEVA-eligible patients",
+      "direction": "higher",
+      "upstream_decision_key": "prone_12h"
+    }
+  },
+
+  "_comment_scores": "score_core is the PRIMARY exposure. Proning is excluded from it because its denominator is a severity-defined cohort roughly two orders of magnitude smaller than the vent-day denominators (682 PROSEVA-eligible patients vs ~60,400 SAT vent-days at UChicago 2018-2024), so at equal weight it would dominate the composite's noise without contributing comparable signal. score_full is the prespecified sensitivity analysis including it. All four metrics are computed and stored regardless of score membership.",
+  "scores": {
+    "score_core": {
+      "label": "Ventilator QI score (core)",
+      "role": "primary_exposure",
+      "weights": {"ltvv": 1, "sat": 1, "sbt": 1}
+    },
+    "score_full": {
+      "label": "Ventilator QI score (incl. proning)",
+      "role": "sensitivity",
+      "weights": {"ltvv": 1, "sat": 1, "sbt": 1, "prone_12h": 1}
+    }
+  },
+
+  "_comment_scale": "Rates are pooled (sum(numerator)/sum(denominator)) and multiplied by 100. Weights are normalized to sum to 1 within each score, so equal integer weights give a plain mean.",
+  "scale": 100
+}

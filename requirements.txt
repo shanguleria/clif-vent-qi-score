@@ -1,0 +1,22 @@
+# Compute stack — PINNED to exact validated versions for cross-site numeric reproducibility.
+# Every site must compute identical numbers, so bump these deliberately (re-validate that the
+# panel does not move), never via an unpinned `>=` floor.
+#
+# clif-dashboards is the single source of the four metric DEFINITIONS (LTVV, SAT, SBT, proning).
+# This repo imports its predicate functions unchanged and only changes the grain at which they are
+# emitted, so the pin is a definitional pin, not just a dependency pin. Verified at f55c379:
+# upstream/{metrics,prep,proning}.py and config/decisions/respiratory.yaml are byte-identical to
+# the commit this repo's definitions/ was copied from.
+clif-dashboards @ git+https://github.com/AartikSarma/clif-dashboards@f55c379
+
+# clifpy governs CLIF *_dttm localization and supplies the respiratory-support waterfall and
+# encounter stitching. Pinned to match clif-dashboards; 0.5.0 changed tz handling.
+clifpy==2.1.0
+pandas==2.3.3
+numpy==2.5.4
+pyarrow==26.0.0
+duckdb==1.5.6
+pyyaml>=6.0.3
+
+# Test-only — does not affect computed metrics.
+pytest>=9.1.1

@@ -1,0 +1,15 @@
+# Provenance of the copied decision files.
+#
+# config/decisions/*.yaml lives OUTSIDE src/clif_dash in the upstream repo, so it is not
+# installed by the wheel (pyproject packages only src/clif_dash). These are verbatim copies
+# taken from the pinned commit. They are not a second source of truth: the generated site
+# YAML points SiteConfig.decisions_dir at this folder, so the upstream builder reads these
+# exact files, and 00_probe_units.py re-diffs them against the upstream clone.
+
+upstream_repo: https://github.com/AartikSarma/clif-dashboards
+upstream_sha: f55c379825be33bf10e9101099e2c7449927c984
+upstream_sha_short: f55c379
+copied_utc: 2026-10-29T20:21:30Z
+files:
+  platform.yaml: sha256:39c40155caf5fbccdff96329faa5810c1189ac4483aa87912b97c4805d9ae4ae
+  respiratory.yaml: sha256:129284cf394f5bda0e2c38ea29aa2e79fb3d4713bdf3a1f9c03eb7c44d97df92

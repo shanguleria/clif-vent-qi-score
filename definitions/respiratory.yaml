@@ -1,0 +1,704 @@
+# =============================================================================
+# Respiratory dashboard: decision log
+# =============================================================================
+# Every analytic choice the respiratory dashboard makes is read from this file
+# and from platform.yaml, whose site-wide choices (age, encounter linking,
+# outliers, time zone, small cells) come first under `shared:`. The merged
+# decisions are copied into the dashboard, where each metric page shows them in
+# its "How this is calculated" panel. Change a `value`, rebuild
+# (`uv run clif-dash build`), and both the numbers and the panel update.
+#
+# Each decision has:
+#   value        — what the code uses (do not rename the `id`)
+#   display      — plain-language version of the value shown on the page
+#   alternatives — options considered (shown on the page)
+#   source       — where the choice comes from
+# Record why you changed a default under `changelog` at the bottom.
+# =============================================================================
+
+version: 1
+
+shared:
+  - id: imv_source
+    label: Ventilator timeline
+    value: clifpy_waterfall
+    display: clifpy respiratory-support waterfall (hourly scaffold, device/mode repair, forward-fill within mode blocks)
+    alternatives: [Raw respiratory_support rows only]
+    source: CLIF respiratory support waterfall (ATS 2025)
+
+  - id: episode_gap_hours
+    label: IMV episode
+    value: 24
+    display: A new IMV episode starts after ≥ 24 h off invasive ventilation; shorter gaps are reintubations within the same episode
+    alternatives: [6 h gap, 48 h gap]
+    source: Local choice
+
+  - id: require_icu
+    label: ICU requirement
+    value: true
+    display: Episode must overlap an ADT stay with location_category = icu
+    alternatives: [Any location]
+    source: Dashboard scope (ICU quality)
+
+  - id: exclude_outside_intubation
+    label: Outside-hospital intubation
+    value: true
+    display: Excluded when the first ADT location is not the ED and the first recorded device is IMV
+    alternatives: [Include and flag]
+    source: CLIF proning study exclusion 1
+
+  - id: comfort_care
+    label: Comfort care / DNI
+    value: include
+    display: Included; filter by code status in the left rail
+    alternatives: [Exclude after a comfort-care order]
+    source: Local choice
+
+  - id: unit_attribution
+    label: Unit attribution
+    value: episode_start
+    display: ICU where the episode started (first ICU stay overlapping the episode if it started in ED/OR)
+    alternatives: [ICU with most episode hours]
+    source: Local choice
+
+  - id: time_attribution
+    label: Time attribution
+    value: episode_start
+    display: Month of IMV episode start (proning metrics use month of enrollment)
+    alternatives: [Month of discharge]
+    source: Local choice
+
+metrics:
+  ltvv:
+    number: 1
+    domain: Lung protection
+    title: Low tidal volume ventilation (≤ 8 mL/kg PBW)
+    short: LTVV adherence
+    unit: "%"
+    direction: higher
+    target: 80
+    numerator: IMV hours with set tidal volume ≤ 8 mL/kg predicted body weight
+    denominator: IMV hours in volume-targeted modes with a set tidal volume and a known PBW
+    decisions:
+      - id: pbw_formula
+        label: PBW formula
+        value: ardsnet
+        display: "ARDSNet: 50 (male) or 45.5 (female) + 0.91 × (height cm − 152.4)"
+        alternatives: []
+        source: ARDSNet
+      - id: height_source
+        label: Height source
+        value: first_plausible
+        display: First height between 120 and 220 cm in the hospitalization
+        alternatives: [Median of all heights]
+        source: Local choice
+      - id: height_range_cm
+        label: Plausible height range
+        value: [120, 220]
+        display: 120–220 cm
+        alternatives: [clifpy range 76–255 cm]
+        source: Local choice
+      - id: modes
+        label: Modes counted
+        value: [assist control-volume control, pressure-regulated volume control, simv, volume support]
+        display: "Volume-targeted: AC-VC, PRVC, SIMV, Volume Support"
+        alternatives: [Add Pressure Control using observed tidal volume]
+        source: CLIF LTVV studies (ATS 2024/2025)
+      - id: vt_field
+        label: Tidal volume used
+        value: tidal_volume_set
+        display: Set tidal volume (tidal_volume_set)
+        alternatives: [Observed tidal volume (tidal_volume_obs)]
+        source: CLIF LTVV studies
+      - id: unit_of_analysis
+        label: Unit of analysis
+        value: hours
+        display: Waterfall IMV hours (one hourly scaffold row = 1 hour)
+        alternatives: [Patient-days, Patients at 24 h]
+        source: Local choice
+      - id: threshold_ml_kg
+        label: Threshold
+        value: 8
+        display: ≤ 8 mL/kg PBW (default shown on the Overview)
+        alternatives: [≤ 6 mL/kg, ≤ 7 mL/kg]
+        source: ATS/ESICM/SCCM 2017 guideline
+      - id: thresholds_selectable
+        label: Thresholds you can switch between
+        value: [6, 7, 8]
+        display: 6, 7 and 8 mL/kg PBW, chosen with the selector at the top of this page; the selected threshold applies to the headline, run chart, breakdown and episode list
+        alternatives: [Add 6.5 mL/kg]
+        source: Requested for this dashboard
+      - id: missing_height
+        label: Missing height
+        value: exclude
+        display: Hours without a PBW are left out of the denominator and counted in metric 4
+        alternatives: [Impute height by sex]
+        source: Local choice
+
+  vt_first24:
+    number: 2
+    domain: Lung protection
+    title: Mean tidal volume, first 24 h of IMV
+    short: Vt/PBW first 24 h
+    unit: mL/kg
+    direction: lower
+    target: 8
+    numerator: Mean of hourly set tidal volume ÷ PBW in the first 24 h of each episode
+    denominator: Episodes with ≥ 1 eligible hour in the first 24 h
+    decisions:
+      - id: window_hours
+        label: Window
+        value: 24
+        display: First 24 h from IMV start
+        alternatives: [First 48 h]
+        source: CLIF LTVV day-1 study (ATS 2024)
+      - id: same_as_ltvv
+        label: Modes, PBW, height
+        value: true
+        display: Same as metric 1
+        alternatives: []
+        source: —
+
+  plateau:
+    number: 3
+    domain: Lung protection
+    title: Plateau pressure ≤ 30 cmH2O
+    short: Plateau ≤ 30
+    unit: "%"
+    direction: higher
+    target: 90
+    numerator: Plateau pressure readings ≤ 30 cmH2O
+    denominator: Recorded plateau pressure readings during IMV in volume-targeted modes
+    decisions:
+      - id: readings
+        label: Readings used
+        value: observed_only
+        display: Recorded rows only (waterfall is_scaffold = false), never forward-filled values
+        alternatives: []
+        source: clifpy waterfall guidance
+      - id: modes
+        label: Modes counted
+        value: [assist control-volume control, pressure-regulated volume control, simv, volume support]
+        display: Volume-targeted modes (as metric 1)
+        alternatives: [All IMV modes]
+        source: Local choice
+      - id: threshold
+        label: Threshold
+        value: 30
+        display: ≤ 30 cmH2O
+        alternatives: [≤ 28 cmH2O]
+        source: ARDSNet
+      - id: unit
+        label: Unit of analysis
+        value: reading
+        display: Per reading
+        alternatives: [Per patient-day (max plateau)]
+        source: Local choice
+
+  height_doc:
+    number: 4
+    domain: Lung protection
+    title: Height documented before first tidal volume set
+    short: Height documented
+    unit: "%"
+    direction: higher
+    target: 95
+    numerator: Episodes with a plausible height recorded at or before the first set tidal volume
+    denominator: IMV episodes with a set tidal volume
+    decisions:
+      - id: timing
+        label: Timing
+        value: before_first_vt
+        display: Height recorded at or before the first set tidal volume of the episode
+        alternatives: [Any time during the hospitalization]
+        source: Local choice
+
+  prone_12h:
+    number: 5
+    domain: Proning
+    title: Proned within 12 h of enrollment
+    short: Proned ≤ 12 h
+    unit: "%"
+    direction: higher
+    target: null
+    numerator: Patients whose first prone session started ≤ 12 h after enrollment
+    denominator: Proning cohort (PROSEVA-eligible, see decisions)
+    show_expected: false   # the build still computes expected proning and O/E; set true to show them
+    decisions: &prone_decisions
+      - id: cohort
+        label: Cohort
+        value: proseva
+        display: "Adults on IMV; P/F < 150 with PEEP ≥ 5 and FiO2 ≥ 0.6; first qualifying ABG within 36 h of IMV start"
+        alternatives: []
+        source: CLIF_Proning_Incidence_Severe_ARF (study definition kept)
+      - id: pf_threshold
+        label: P/F threshold
+        value: 150
+        display: P/F < 150
+        alternatives: []
+        source: PROSEVA / CLIF proning study
+      - id: peep_min
+        label: PEEP minimum
+        value: 5
+        display: PEEP ≥ 5 cmH2O
+        alternatives: []
+        source: CLIF proning study
+      - id: fio2_min
+        label: FiO2 minimum
+        value: 0.6
+        display: FiO2 ≥ 0.6
+        alternatives: []
+        source: CLIF proning study
+      - id: first_abg_window_h
+        label: First qualifying ABG
+        value: 36
+        display: Within 36 h of IMV start
+        alternatives: []
+        source: CLIF proning study
+      - id: confirm_window_h
+        label: Confirmation
+        value: [12, 24]
+        display: Second qualifying ABG 12–24 h after the first, or proned within 24 h of the first
+        alternatives: []
+        source: CLIF proning study
+      - id: enrollment
+        label: Enrollment time
+        value: earlier_of_second_abg_or_prone
+        display: Earlier of the second qualifying ABG or the first prone time
+        alternatives: []
+        source: CLIF proning study
+      - id: blood_gas
+        label: Blood gases
+        value: arterial_only
+        display: Arterial PaO2 (lab_category po2_arterial) only; FiO2 and PEEP from the waterfall at the ABG time; no imputation of PaO2
+        alternatives: [Add SpO2/FiO2 surrogate]
+        source: CLIF proning study
+      - id: first_episode_only
+        label: Ventilation episode
+        value: true
+        display: First IMV episode of the encounter only
+        alternatives: []
+        source: CLIF proning study
+      - id: exclude_early_trach
+        label: Early tracheostomy
+        value: true
+        display: Excluded if tracheostomy recorded before 24 h of the first IMV episode
+        alternatives: []
+        source: CLIF proning study exclusion 2
+      - id: exclude_or_hours
+        label: Recent OR
+        value: 48
+        display: Excluded if in a procedural location in the 48 h before enrollment
+        alternatives: []
+        source: CLIF proning study exclusion 3
+      - id: encounters_per_patient
+        label: Encounters per patient
+        value: all
+        display: Every eligible encounter is counted
+        alternatives: [One random encounter per patient (study rule)]
+        source: "Deviation from study: chosen for monthly QI (planning doc)"
+      - id: semi_prone
+        label: Semi-prone
+        value: not_prone
+        display: Only position_category = prone counts; "semi" names mapped to prone are flagged on the data-quality page
+        alternatives: []
+        source: CLIF proning study QC check
+      - id: session_end
+        label: Prone session end
+        value: next_position_or_vent_end
+        display: Next documented position change, or end of the ventilation episode for the last row
+        alternatives: []
+        source: CLIF proning study
+      - id: risk_model
+        label: Expected proning
+        value: global_coefficients
+        display: "Logistic model with the consortium's global coefficients: age, sex, BMI, norepinephrine-equivalent category, SOFA, minimum P/F (24 h before enrollment). Computed, but observed/expected is not shown on the dashboard"
+        alternatives: [Site-fitted model]
+        source: CLIF proning study script 02
+
+  prone_any:
+    number: 6
+    domain: Proning
+    title: Proned within 24 h, 72 h, or ever
+    short: Proned ≤ 24 h / 72 h / ever
+    unit: "%"
+    direction: higher
+    target: null
+    numerator: Patients proned within 24 h (headline), 72 h, or at any time in the episode
+    denominator: Proning cohort
+    decisions: *prone_decisions
+
+  prone_dose:
+    number: 7
+    domain: Proning
+    title: Prone session duration
+    short: Prone hours per session
+    unit: h
+    direction: higher
+    target: 16
+    numerator: Median hours per prone session among proned patients
+    denominator: Proned patients in the proning cohort
+    decisions: *prone_decisions
+
+  sat:
+    number: 8
+    domain: Liberation
+    title: Spontaneous awakening trial on eligible vent-days
+    short: SAT performed
+    unit: "%"
+    direction: higher
+    target: 80
+    numerator: Eligible vent-days with an SAT (documented or EHR phenotype — see decisions)
+    denominator: Vent-days on a continuous sedative, no paralytic, not comfort care
+    decisions:
+      - id: definition
+        label: Definition
+        value: either
+        display: Documented SAT (assessment_category sat_delivery_pass_fail) or EHR phenotype; both also shown separately
+        alternatives: [Documented only, Phenotype only]
+        source: CLIF SAT phenotyping (ATS 2025, SCCM 2026)
+      - id: phenotype
+        label: EHR phenotype
+        value: all_sedatives_off_30min
+        display: All continuous sedative infusions at 0 for ≥ 30 min while still on IMV, after being on that day. Halving of doses is not yet detected.
+        alternatives: [Include ≥ 50% dose reduction]
+        source: CLIF SAT phenotyping (adapted)
+      - id: sedatives
+        label: Sedatives counted
+        value: [propofol, midazolam, lorazepam, dexmedetomidine, ketamine]
+        display: Propofol, midazolam, lorazepam, dexmedetomidine, ketamine (opioid-only infusions do not make a day eligible)
+        alternatives: [Include opioid infusions]
+        source: Local choice
+      - id: eligibility
+        label: Eligibility
+        value: sedative_no_paralytic
+        display: On a continuous sedative that day; no paralytic infusion that day; not on comfort care
+        alternatives: [Add hemodynamic limits]
+        source: Local choice
+      - id: vent_day
+        label: Vent-day
+        value: calendar_day_6h
+        display: Calendar day in site time with ≥ 6 h on IMV
+        alternatives: [24 h blocks from intubation]
+        source: Local choice
+
+  paralytic_8h:
+    number: "8b"
+    domain: Sedation
+    title: Continuous paralytic infusion > 8 h per intubated ICU day
+    short: Paralytic > 8 h/day
+    unit: "%"
+    direction: lower
+    target: 10
+    target_op: "<"
+    numerator: Intubated ICU days with more than 8 h of continuous paralytic infusion
+    denominator: All intubated ICU calendar days
+    decisions:
+      - id: hours_threshold
+        label: Daily threshold
+        value: 8
+        display: More than 8 total hours of infusion in a calendar day (site time); separate runs that day are added together
+        alternatives: [≥ 8 h, "> 12 h"]
+        source: Local choice
+      - id: denominator
+        label: Denominator
+        value: all_intubated_icu_calendar_days
+        display: Every calendar day with any hour of invasive ventilation while the patient's ADT location is an ICU (no minimum hours, unlike the SAT/SBT vent-day)
+        alternatives: [Only days with ≥ 6 h IMV]
+        source: Requested local definition
+      - id: paralytic_source
+        label: Paralytic source
+        value: infusion_intervals
+        display: "Continuous infusions in medication_admin_continuous with med_group paralytics, or med_category cisatracurium, rocuronium, vecuronium, atracurium, pancuronium, succinylcholine; dose > 0"
+        alternatives: [Include bolus paralytics]
+        source: Local choice
+      - id: infusion_end
+        label: Infusion end
+        value: next_mar_event
+        display: An infusion runs until the next MAR event for the same drug (stop, pause or rate change); if no later event is recorded, it is assumed to run 6 h
+        alternatives: [Assume 1 h after the last record]
+        source: Same rule as the sedative and vasopressor timelines
+      - id: target
+        label: Target
+        value: "< 10%"
+        display: Fewer than 10% of intubated ICU days
+        alternatives: []
+        source: Requested local target
+
+  sbt:
+    number: 9
+    domain: Liberation
+    title: Spontaneous breathing trial on eligible vent-days
+    short: SBT performed
+    unit: "%"
+    direction: higher
+    target: 80
+    numerator: Eligible vent-days with an SBT (documented or EHR phenotype)
+    denominator: Vent-days meeting oxygenation and hemodynamic readiness criteria
+    decisions:
+      - id: definition
+        label: Definition
+        value: either
+        display: Documented SBT (sbt_delivery_pass_fail) or EHR phenotype; both also shown separately
+        alternatives: [Documented only, Phenotype only]
+        source: CLIF SBT phenotyping (SCCM 2026)
+      - id: phenotype
+        label: EHR phenotype
+        value: ps_le8_peep_le5_30min
+        display: Pressure support/CPAP with PS ≤ 8 and PEEP ≤ 5, or T-piece/blow-by, held ≥ 30 min
+        alternatives: [PS ≤ 5]
+        source: CLIF SBT phenotyping (adapted)
+      - id: ps_max
+        label: PS maximum
+        value: 8
+        display: ≤ 8 cmH2O
+        alternatives: []
+        source: —
+      - id: peep_max_trial
+        label: Trial PEEP maximum
+        value: 5
+        display: ≤ 5 cmH2O
+        alternatives: []
+        source: —
+      - id: eligibility
+        label: Eligibility
+        value: {fio2_max: 0.5, peep_max: 8, nee_max: 0.2}
+        display: "At some hour that day: FiO2 ≤ 0.5, PEEP ≤ 8, no paralytic, norepinephrine-equivalent ≤ 0.2 mcg/kg/min"
+        alternatives: [Local protocol limits]
+        source: Local choice
+      - id: vent_day
+        label: Vent-day
+        value: calendar_day_6h
+        display: Calendar day in site time with ≥ 6 h on IMV
+        alternatives: [24 h blocks from intubation]
+        source: Local choice
+
+  vfd28:
+    number: 10
+    domain: Liberation
+    title: Ventilator-free days at day 28
+    short: VFD-28
+    unit: days
+    direction: higher
+    target: null
+    numerator: Mean ventilator-free days to day 28
+    denominator: IMV episodes
+    decisions:
+      - id: day0
+        label: Day 0
+        value: imv_start
+        display: IMV episode start
+        alternatives: [ICU admission]
+        source: Local choice
+      - id: death
+        label: Death
+        value: zero
+        display: Death before day 28 = 0 VFD
+        alternatives: [Death = −1 (ranked)]
+        source: Yehya et al. 2019 convention
+      - id: discharge_before_28
+        label: Discharge before day 28
+        value: assume_free
+        display: Alive discharge assumed ventilator-free to day 28
+        alternatives: [Censor]
+        source: Local choice
+      - id: trach_collar
+        label: Trach collar
+        value: free
+        display: Trach collar counts as ventilator-free
+        alternatives: [Counts as ventilated]
+        source: Local choice
+
+  imv_duration:
+    number: 11
+    domain: Liberation
+    title: Duration of invasive ventilation
+    short: IMV duration
+    unit: days
+    direction: lower
+    target: null
+    numerator: Median IMV days per episode
+    denominator: IMV episodes
+    decisions:
+      - id: censoring
+        label: End of episode
+        value: last_imv
+        display: First non-IMV device after the last IMV hour; death or discharge if still on IMV
+        alternatives: [Exclude tracheostomy patients]
+        source: Local choice
+      - id: statistic
+        label: Statistic
+        value: median
+        display: Median (with IQR on the detail page)
+        alternatives: [Mean]
+        source: Local choice
+
+  reintubation:
+    number: 12
+    domain: Liberation
+    title: Reintubation within 48 h of extubation
+    short: Reintubation ≤ 48 h
+    unit: "%"
+    direction: lower
+    target: 15
+    numerator: Extubations followed by IMV again within 48 h
+    denominator: Planned extubations
+    decisions:
+      - id: extubation
+        label: Extubation
+        value: imv_to_non_imv
+        display: IMV → non-IMV device; excludes moves to trach collar and death within 24 h
+        alternatives: [Include all IMV ends]
+        source: Local choice
+      - id: window_hours
+        label: Window
+        value: 48
+        display: 48 h
+        alternatives: [72 h, 7 days]
+        source: Local choice
+      - id: comfort_extubation
+        label: Comfort-care extubation
+        value: exclude
+        display: Excluded when a DNR/DNI/AND code status starts in the 24 h before extubation
+        alternatives: [Include]
+        source: Local choice
+
+  light_sedation:
+    number: 13
+    domain: Sedation
+    title: RASS in target range during IMV
+    short: Light sedation
+    unit: "%"
+    direction: higher
+    target: 70
+    numerator: RASS readings from −2 to +1
+    denominator: RASS readings during IMV, excluding paralytic infusions
+    decisions:
+      - id: target_range
+        label: Target range
+        value: [-2, 1]
+        display: RASS −2 to +1
+        alternatives: [−1 to 0]
+        source: PADIS 2018
+      - id: exclude_paralytic
+        label: Readings excluded
+        value: true
+        display: Readings during a paralytic infusion
+        alternatives: [None]
+        source: Local choice
+      - id: unit
+        label: Unit of analysis
+        value: reading
+        display: Per reading
+        alternatives: [Per patient-day (mean RASS)]
+        source: Local choice
+
+  deep_sedation:
+    number: 14
+    domain: Sedation
+    title: Deep sedation in the first 48 h of IMV
+    short: Deep sedation first 48 h
+    unit: "%"
+    direction: lower
+    target: 20
+    numerator: Episodes with > 50% of RASS readings ≤ −3 in the first 48 h
+    denominator: Episodes with ≥ 1 RASS reading in the first 48 h
+    decisions:
+      - id: definition
+        label: Definition
+        value: {threshold: -3, share: 0.5, window_hours: 48}
+        display: More than 50% of RASS readings ≤ −3 in the first 48 h of IMV
+        alternatives: [Any RASS ≤ −4 in first 48 h]
+        source: Shehabi et al. 2012 (early deep sedation)
+
+  mortality:
+    number: "15a"
+    domain: Outcomes
+    title: In-hospital mortality
+    short: Mortality
+    unit: "%"
+    direction: lower
+    target: null
+    numerator: Encounters ending in death
+    denominator: Encounters with an IMV episode (outcome attributed to the first episode)
+    decisions: &outcome_decisions
+      - id: death
+        label: Death
+        value: [Expired]
+        display: discharge_category = Expired
+        alternatives: [Expired + Hospice]
+        source: CLIF data dictionary note
+      - id: icu_los
+        label: ICU LOS
+        value: sum_icu_segments
+        display: Sum of ADT ICU segments in the encounter
+        alternatives: [First ICU stay only]
+        source: Local choice
+      - id: readmit_hours
+        label: ICU readmission
+        value: 48
+        display: Return to ICU ≤ 48 h after transfer out
+        alternatives: [≤ 72 h]
+        source: CLIF ICU readmission study (Crit Care Explor 2025)
+      - id: trach_source
+        label: Tracheostomy
+        value: respiratory_support
+        display: tracheostomy = 1 in respiratory_support
+        alternatives: [Procedure codes (CPT/ICD-10-PCS)]
+        source: Local choice
+      - id: attribution
+        label: Encounters with several episodes
+        value: first_episode
+        display: Outcomes counted once, on the encounter's first IMV episode
+        alternatives: []
+        source: Local choice
+      - id: risk_adjustment
+        label: Risk adjustment
+        value: internal_logistic
+        display: "Observed and expected. Expected = logistic model fitted on this site's own data: age, sex, SOFA (24 h before IMV start) and Charlson index. O/E compares units and months with the site average, not with other hospitals."
+        alternatives: [Observed only]
+        source: Planning doc (raw rates and O/E)
+
+  icu_los:
+    number: "15b"
+    domain: Outcomes
+    title: ICU length of stay
+    short: ICU LOS
+    unit: days
+    direction: lower
+    target: null
+    numerator: Median ICU days per encounter
+    denominator: Encounters with an IMV episode
+    decisions: *outcome_decisions
+
+  trach:
+    number: "15c"
+    domain: Outcomes
+    title: Tracheostomy
+    short: Tracheostomy
+    unit: "%"
+    direction: neutral
+    target: null
+    numerator: Encounters with a tracheostomy recorded
+    denominator: Encounters with an IMV episode
+    decisions: *outcome_decisions
+
+  icu_readmit:
+    number: "15d"
+    domain: Outcomes
+    title: ICU readmission within 48 h
+    short: ICU readmit ≤ 48 h
+    unit: "%"
+    direction: lower
+    target: null
+    numerator: Encounters with return to ICU ≤ 48 h after transfer out
+    denominator: Encounters transferred out of the ICU alive
+    decisions: *outcome_decisions
+
+changelog:
+  - date: 2026-10-06
+    change: Initial defaults from the planning doc
+  - date: 2026-10-12
+    change: "Paralytic > 8 h/day (8b): target < 10%, denominator restricted to days in an ICU location, paralytics also matched by drug name"
+  - date: 2026-10-26
+    change: "Proned within 12 h: observed/expected hidden on the dashboard (show_expected: false), as on Cathy Gao-Howard's site branch; expected proning is still computed"

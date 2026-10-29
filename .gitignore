@@ -1,0 +1,17 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Site profiles hold local data paths — site-local, gitignored.
+# Commit sites/*.example.json only; definitions/ is the shared spec and IS committed.
+sites/*.json
+!sites/*.example.json
+
+# Generated outputs and intermediate data — output/<site>/intermediate_phi/ holds
+# one row per patient-hour and patient-day. Never commit.
+output/
+
+# Internal working notes
+.claude/

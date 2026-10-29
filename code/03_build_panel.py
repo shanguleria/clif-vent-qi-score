@@ -1,0 +1,207 @@
+"""Stage 3 — roll the metric records up into a unit x period panel with composite scores.
+
+Builds the canonical contribution table (one row per metric x unit-period x patient-episode), then
+pools it into the panel. Pooling is sum(num)/sum(den), so a unit-quarter's LTVV rate is
+hour-weighted and its SAT/SBT rates are vent-day-weighted — matching the upstream's aggregation
+rather than averaging per-patient percentages.
+
+Writes:
+  intermediate_phi/panel/contributions.parquet   row-level, carries patient_id — NEVER shared
+  final_no_phi/unit_period_panel.csv             the panel (aggregate by construction)
+  final_no_phi/unit_period_panel.parquet
+  final_no_phi/panel_provenance.json
+
+Records that fell in no named ICU stay (IMV on the ward, in the OR, or in the ED) are reported and
+then excluded: they are real care, but not care any ICU can be scored for.
+
+Run:  .venv/bin/python code/03_build_panel.py [--site uchicago]
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import bundle_config as bc                                             # noqa: E402
+from common import attribution as attr                                 # noqa: E402
+from common import scoring as S                                        # noqa: E402
+
+from clif_dash.upstream import metrics as up_metrics                   # noqa: E402
+
+GROUP = ("unit_name", "period")
+
+
+def build_contributions(site: str, ltvv_threshold: float) -> tuple[pd.DataFrame, dict]:
+    """One row per (metric, unit-period, encounter_block) with its numerator and denominator."""
+    phi = bc.phi_dir(site)
+    rec = phi / "records"
+    encounters = pd.read_parquet(phi / "cohort" / "encounters.parquet",
+                                 columns=["encounter_block", "patient_id"])
+    encounters["encounter_block"] = attr.norm_block(encounters["encounter_block"])
+    pid = encounters.drop_duplicates("encounter_block").set_index("encounter_block")["patient_id"]
+
+    parts, dropped = [], {}
+
+    def add(metric: str, frame: pd.DataFrame, num: pd.Series, den: pd.Series):
+        if not len(frame):
+            return
+        f = frame[["unit_name", "period", "encounter_block"]].copy()
+        f["encounter_block"] = attr.norm_block(f["encounter_block"])
+        f["num"], f["den"] = num.to_numpy(), den.to_numpy()
+        n_before = len(f)
+        f = f[f["unit_name"] != attr.UNATTRIBUTED]
+        dropped[metric] = {"records_unattributed": int(n_before - len(f)),
+                           "denominator_unattributed": int(den.to_numpy().sum() - f["den"].sum())}
+        g = (f.groupby(["unit_name", "period", "encounter_block"], observed=True, dropna=False)
+             [["num", "den"]].sum().reset_index())
+        g["patient_id"] = g["encounter_block"].map(pid)
+        g["metric"] = metric
+        parts.append(g[S.CONTRIB_COLUMNS])
+
+    ltvv = pd.read_parquet(rec / "ltvv_hours.parquet")
+    key = up_metrics.ltvv_key(ltvv_threshold)
+    add("ltvv", ltvv, ltvv[key], pd.Series(1, index=ltvv.index))
+
+    days = pd.read_parquet(rec / "vent_days.parquet")
+    add("sat", days, days["sat_num"], days["sat_den"])
+    add("sbt", days, days["sbt_num"], days["sbt_den"])
+
+    prone_path = rec / "prone_patients.parquet"
+    if prone_path.exists():
+        prone = pd.read_parquet(prone_path)
+        add("prone_12h", prone, prone["p12"], pd.Series(1, index=prone.index))
+
+    contrib = pd.concat(parts, ignore_index=True)
+    missing_pid = int(contrib["patient_id"].isna().sum())
+    if missing_pid:
+        raise AssertionError(f"{missing_pid} contribution rows have no patient_id; "
+                             f"leave-one-out would silently under-remove")
+    return contrib, dropped
+
+
+def supplementary_ltvv(site: str, thresholds, primary) -> pd.DataFrame:
+    """LTVV rates at the other selectable thresholds, for sensitivity. Not part of any score."""
+    ltvv = pd.read_parquet(bc.phi_dir(site) / "records" / "ltvv_hours.parquet")
+    ltvv = ltvv[ltvv["unit_name"] != attr.UNATTRIBUTED]
+    keys = {t: up_metrics.ltvv_key(t) for t in thresholds if t != primary}
+    if not keys:
+        return pd.DataFrame(columns=list(GROUP))
+    agg = (ltvv.groupby(list(GROUP), observed=True)
+           .agg(_den=("vt_pbw", "size"), **{f"_n{t}": (k, "sum") for t, k in keys.items()})
+           .reset_index())
+    for t in keys:
+        agg[f"ltvv_rate_at_{str(t).replace('.', '_')}"] = S.pooled_rate(agg[f"_n{t}"], agg["_den"])
+    return agg.drop(columns=["_den"] + [f"_n{t}" for t in keys])
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--site")
+    args = ap.parse_args()
+    site = bc.active_site(args.site)
+    prof = bc.load_profile(site)
+    comp = bc.load_composite()
+    scale = comp.get("scale", 100)
+
+    print(f"=== 03 build panel: site {site} ===")
+    primary = bc.decision_value("ltvv", "threshold_ml_kg", site)
+    selectable = bc.decision_value("ltvv", "thresholds_selectable", site)
+    print(f"  LTVV threshold (from definitions/): <= {primary} mL/kg PBW "
+          f"(selectable {selectable})")
+
+    contrib, dropped = build_contributions(site, primary)
+    print(f"\n[contributions] {len(contrib):,} rows over {contrib['metric'].nunique()} metrics")
+    for metric in bc.metric_ids():
+        m = contrib[contrib["metric"] == metric]
+        d = dropped.get(metric, {})
+        print(f"  {metric:<10} den={int(m['den'].sum()):>8,}  num={int(m['num'].sum()):>8,}  "
+              f"cells={m.groupby(list(GROUP)).ngroups:>4}  "
+              f"unattributed_den_dropped={d.get('denominator_unattributed', 0):,}")
+
+    panel = S.cell_totals(contrib, GROUP)
+
+    # A metric with no records at all (e.g. a site with no `position` table cannot observe proning)
+    # must degrade to an empty column, not a KeyError three functions later. Scores that include it
+    # then correctly evaluate to NaN, and the gap is reported rather than inferred from a traceback.
+    absent = [m for m in bc.metric_ids() if f"{m}_den" not in panel.columns]
+    for m in absent:
+        panel[f"{m}_num"] = 0
+        panel[f"{m}_den"] = 0
+        panel[f"{m}_rate"] = float("nan")
+    if absent:
+        print(f"\n  NOTE: no records for {', '.join(absent)} at this site — "
+              f"any score including them will be null. Check the source tables exist.")
+
+    # Composite scores. Iterate the config's own score keys so adding one is never a no-op.
+    for score_id in bc.score_ids():
+        w = bc.weights(score_id)
+        s, n = S.composite(panel, w, scale=scale)
+        panel[score_id] = s.round(2)
+        panel[f"{score_id}_n_components"] = n
+    panel = S.flag_low_denominator(panel, prof.get("min_denominator", {}) or {},
+                                   scores={s: bc.weights(s) for s in bc.score_ids()})
+
+    # Anonymized unit labels. `location_name` is a site's internal nomenclature; consortium
+    # deliverables refer to units only as "Unit 1..n". Numbering is by total LTVV denominator
+    # (descending, then name) so it is deterministic across reruns. The crosswalk stays site-local.
+    volume = (panel.groupby("unit_name", observed=True)["ltvv_den"].sum()
+              .sort_values(ascending=False))
+    order = sorted(volume.index, key=lambda u: (-volume[u], u))
+    unit_id = {u: f"Unit {i}" for i, u in enumerate(order, 1)}
+    panel["unit_id"] = panel["unit_name"].map(unit_id)
+
+    supp = supplementary_ltvv(site, selectable, primary)
+    if len(supp):
+        panel = panel.merge(supp, on=list(GROUP), how="left")
+
+    for c in [c for c in panel.columns if c.endswith("_rate") or c.startswith("ltvv_rate_at_")]:
+        panel[c] = panel[c].round(4)
+    panel = panel.sort_values(list(GROUP)).reset_index(drop=True)
+
+    # ---- report effective floors BY EXECUTION, not by reading the config ----
+    print(f"\n[panel] {len(panel):,} unit-period cells "
+          f"({panel['unit_name'].nunique()} units x {panel['period'].nunique()} periods)")
+    for metric, floor in (prof.get("min_denominator", {}) or {}).items():
+        n = int(panel[f"{metric}_low"].sum())
+        print(f"  floor {metric:<10} den < {floor:<4} flagged {n:>4} / {len(panel)} cells")
+    for score_id in bc.score_ids():
+        ok = int(panel[score_id].notna().sum())
+        low = int(panel[f"{score_id}_low"].sum())
+        print(f"  {score_id:<12} computable in {ok}/{len(panel)} cells  "
+              f"(median {panel[score_id].median():.1f})  "
+              f"below its own floors: {low}")
+
+    phi_out = bc.phi_dir(site) / "panel"
+    phi_out.mkdir(parents=True, exist_ok=True)
+    contrib.to_parquet(phi_out / "contributions.parquet", index=False)
+    (pd.DataFrame({"unit_id": list(unit_id.values()), "unit_name": list(unit_id.keys())})
+     .to_csv(phi_out / "unit_crosswalk.csv", index=False))
+
+    share = bc.share_dir(site)
+    front = ["unit_id", "unit_name", "period"]
+    panel = panel[front + [c for c in panel.columns if c not in front]]
+    panel.to_parquet(share / "unit_period_panel.parquet", index=False)
+    panel.to_csv(share / "unit_period_panel.csv", index=False)
+    # Anonymized twin for anything leaving the site (manuscripts, posters, coordinating centre).
+    panel.drop(columns=["unit_name"]).to_csv(share / "unit_period_panel_anonymized.csv", index=False)
+    (share / "panel_provenance.json").write_text(json.dumps({
+        "provenance": bc.provenance(site),
+        "composite": {s: comp["scores"][s] for s in bc.score_ids()},
+        "ltvv_threshold_ml_kg": primary,
+        "min_denominator": prof.get("min_denominator", {}),
+        "unattributed": dropped,
+        "cells": int(len(panel)),
+        "units": int(panel["unit_name"].nunique()),
+        "periods": int(panel["period"].nunique()),
+    }, indent=2, default=str))
+    print(f"\n  wrote {share}/unit_period_panel.csv  (+ _anonymized.csv, unit names stripped)")
+    print(f"  unit crosswalk kept site-local in {phi_out}/unit_crosswalk.csv")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
