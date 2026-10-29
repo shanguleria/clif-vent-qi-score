@@ -269,7 +269,8 @@ clif-vent-qi-score/
 ├── code/                       # 00..06, each standalone-runnable
 ├── tests/                      # synthetic frames, no CLIF data
 │   ├── test_scoring.py         #   pooled rates, composite, leave-one-out, attribution
-│   └── test_cohort_source.py   #   stage-cache completeness + decision matching
+│   ├── test_cohort_source.py   #   stage-cache completeness + decision matching
+│   └── test_phi_gate.py        #   the shareable-output identifier gate actually fires
 ├── docs/METHODS.md             # definitions, deviations, known caveats
 └── output/<site>/              # gitignored
     ├── intermediate_phi/       #   row-level — never shared
@@ -306,8 +307,9 @@ and the known caveats (notably: at UChicago SAT is effectively a *phenotype* mea
 
 - `intermediate_phi/` holds one row per patient-hour and patient-day. It is never shared and never
   read with a display tool — only by code that prints aggregates.
-- `final_no_phi/` is aggregate by construction. Every stage prints counts only; no raw CLIF table
-  or patient-level value is written to stdout.
+- `final_no_phi/` is aggregate by construction, and stage 3 **enforces** it: a gate aborts the run
+  if `hospitalization_id`, `patient_id`, `encounter_block` or `episode_id` appears in any shareable
+  file. Every stage prints counts only; no raw CLIF table or patient-level value reaches stdout.
 - `sites/*.json` carries local data paths and is gitignored; only `*.example.json` is committed.
 - **For anything leaving the site** — manuscripts, posters, coordinating-centre uploads — use
   `unit_period_panel_anonymized.csv`, which carries `Unit 1..n` instead of `location_name`. The

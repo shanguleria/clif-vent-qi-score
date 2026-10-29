@@ -34,6 +34,33 @@ from clif_dash.upstream import metrics as up_metrics                   # noqa: E
 
 GROUP = ("unit_name", "period")
 
+#: Row-level identifiers that must never appear in a shareable artifact. Checked by execution on
+#: every run, because "the panel is aggregate by construction" is an assumption a future column
+#: could quietly break.
+FORBIDDEN = ("hospitalization_id", "patient_id", "encounter_block", "episode_id")
+
+
+def phi_gate(share_dir) -> None:
+    """Abort if anything under final_no_phi/ carries a row-level identifier."""
+    import pandas as _pd
+    leaks = []
+    for f in sorted(share_dir.rglob("*")):
+        if f.is_dir():
+            continue
+        if f.suffix in (".csv", ".json"):
+            hits = [t for t in FORBIDDEN if t in f.read_text()]
+        elif f.suffix == ".parquet":
+            hits = [t for t in FORBIDDEN if t in list(_pd.read_parquet(f).columns)]
+        else:
+            hits = []
+        if hits:
+            leaks.append(f"{f.name}: {', '.join(hits)}")
+    if leaks:
+        raise SystemExit("[phi-gate] ABORT: row-level identifiers in shareable output:\n  "
+                         + "\n  ".join(leaks))
+    print(f"  PHI gate: {len(list(share_dir.rglob('*.csv')) + list(share_dir.rglob('*.parquet')) + list(share_dir.rglob('*.json')))} "
+          f"shareable files, no row-level identifiers")
+
 
 def build_contributions(site: str, ltvv_threshold: float) -> tuple[pd.DataFrame, dict]:
     """One row per (metric, unit-period, encounter_block) with its numerator and denominator."""
@@ -198,6 +225,7 @@ def main() -> int:
         "units": int(panel["unit_name"].nunique()),
         "periods": int(panel["period"].nunique()),
     }, indent=2, default=str))
+    phi_gate(share)
     print(f"\n  wrote {share}/unit_period_panel.csv  (+ _anonymized.csv, unit names stripped)")
     print(f"  unit crosswalk kept site-local in {phi_out}/unit_crosswalk.csv")
     return 0
