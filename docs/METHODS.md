@@ -213,3 +213,5 @@ patient accrued the most **vent-days** (`sat` denominator — the grain SAT and 
 | `score_core` computable | 193/195 cells, median 54.0 | `code/03_build_panel.py` `[panel]` |
 | `score_full` computable | 153/195 cells, median 43.1 | `code/03_build_panel.py` `[panel]` |
 | Equivalence checks | 13/13 PASS, 0 episodes differing | `final_no_phi/verification.json` |
+| Cached vs cold-build panel | identical, 195 cells x 28 columns | `code/06_compare_tiers.py --compare` |
+| Runtime, cached / cold | 12m27s / 17m19s (build 5m15s, 1.1 GB) | `output/uchicago/run_timings.csv` |

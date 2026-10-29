@@ -55,9 +55,12 @@ run_stage(){
 }
 
 T0=$SECONDS
+# Stage 0 resolves the cohort source (building it cold when needed) and records the result;
+# every later stage reuses that record. --rebuild therefore goes ONLY to stage 0 — handing it
+# further down would re-run the upstream waterfall build once per stage.
 run_stage code/00_probe_units.py       "${PASS[@]+"${PASS[@]}"}"
-run_stage code/01_build_cohort.py      "${PASS[@]+"${PASS[@]}"}"
-run_stage code/02_metric_records.py    "${PASS[@]+"${PASS[@]}"}"
+run_stage code/01_build_cohort.py
+run_stage code/02_metric_records.py
 run_stage code/03_build_panel.py
 run_stage code/04_exposure_assignment.py
 [[ "$SKIP_VERIFY" -eq 1 ]] || run_stage code/05_verify_equivalence.py

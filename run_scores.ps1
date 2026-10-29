@@ -49,9 +49,12 @@ function Invoke-Stage {
 }
 
 $total = [Diagnostics.Stopwatch]::StartNew()
+# Stage 0 resolves the cohort source (building it cold when needed) and records the result;
+# every later stage reuses that record. -Rebuild therefore goes ONLY to stage 0 - handing it
+# further down would re-run the upstream waterfall build once per stage.
 Invoke-Stage "code\00_probe_units.py"        $Pass
-Invoke-Stage "code\01_build_cohort.py"       $Pass
-Invoke-Stage "code\02_metric_records.py"     $Pass
+Invoke-Stage "code\01_build_cohort.py"
+Invoke-Stage "code\02_metric_records.py"
 Invoke-Stage "code\03_build_panel.py"
 Invoke-Stage "code\04_exposure_assignment.py"
 if (-not $SkipVerify) { Invoke-Stage "code\05_verify_equivalence.py" }

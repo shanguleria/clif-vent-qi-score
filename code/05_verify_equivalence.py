@@ -58,7 +58,8 @@ def main() -> int:
     site = bc.active_site(args.site)
     print(f"=== 05 verify equivalence: site {site} ===")
 
-    src = cohort_source.resolve(site, log=lambda *a: None)
+    src = (cohort_source.recorded(bc.phi_dir(site) / "cohort" / "source.json", log=lambda *a: None)
+           or cohort_source.resolve(site, log=lambda *a: None))
     dash = src.stage.parent
     ep_path, pr_path = dash / "episodes.parquet", dash / "proning.parquet"
     if not ep_path.exists():

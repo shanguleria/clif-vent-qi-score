@@ -44,7 +44,9 @@ def main() -> int:
     tz, period = prof["timezone"], prof.get("period", "quarter")
 
     print(f"=== 01 build cohort: site {site} ===")
-    src = cohort_source.resolve(site, rebuild=args.rebuild, require_stage=args.require_stage)
+    src = (cohort_source.recorded(bc.phi_dir(site) / "cohort" / "source.json")
+           or cohort_source.resolve(site, rebuild=args.rebuild,
+                                    require_stage=args.require_stage))
 
     episodes = src.read("episodes_a")
     runs = src.read("runs_a")
@@ -85,6 +87,7 @@ def main() -> int:
                    "first": episodes["period"].min(), "last": episodes["period"].max()},
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    cohort_source.record(src, out / "source.json")
 
     c = manifest["counts"]
     print(f"\n  IMV episodes analysed    : {c['imv_episodes']:,}")

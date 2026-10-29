@@ -142,6 +142,34 @@ def _diff_decisions(cached: dict, ours: dict) -> list[str]:
     return diffs
 
 
+def record(src: "CohortSource", path: Path) -> None:
+    """Persist which source stage 0 resolved, so later stages reuse it instead of re-resolving.
+
+    Without this, every stage calling `resolve(rebuild=True)` would re-run the whole upstream
+    build — paying the waterfall cost once per stage — and a stage that did NOT get the flag would
+    silently fall back to a different (stale) cache than the one stage 0 just built.
+    """
+    path.write_text(json.dumps({"tier": src.tier, "stage": str(src.stage), "reason": src.reason},
+                               indent=2))
+
+
+def recorded(path: Path, log=print) -> "CohortSource | None":
+    """The source stage 0 recorded, if it is still complete. None means re-resolve."""
+    if not path.exists():
+        return None
+    try:
+        d = json.loads(path.read_text())
+        stage = Path(d["stage"])
+    except Exception:
+        return None
+    bad = _completeness(stage)
+    if bad:
+        log(f"  recorded cohort source at {stage} is no longer usable: {bad}")
+        return None
+    log(f"  cohort source: reusing what stage 0 resolved ({d['tier']}) — {stage}")
+    return CohortSource(d["tier"], stage, d["reason"])
+
+
 def resolve(site: str | None = None, *, rebuild: bool = False,
             require_stage: bool = False, log=print) -> CohortSource:
     """Pick a cohort source. See module docstring for the tier semantics."""

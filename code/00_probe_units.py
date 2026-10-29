@@ -162,7 +162,13 @@ def main() -> int:
     site = bc.active_site(args.site)
     print(f"=== probe: site {site} ===")
 
+    # Stage 0 runs first, so it owns cohort-source resolution — including a cold build when one
+    # is needed — and records the result. Every later stage reuses that record, so the upstream
+    # build runs at most ONCE per pipeline invocation rather than once per stage.
     src = cohort_source.resolve(site, rebuild=args.rebuild, require_stage=args.require_stage)
+    source_file = bc.phi_dir(site) / "cohort" / "source.json"
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    cohort_source.record(src, source_file)
     checks = [
         ("definitions", check_definitions()),
         ("composite", check_composite_coverage()),

@@ -250,7 +250,10 @@ def main() -> int:
     tz, period = prof["timezone"], prof.get("period", "quarter")
 
     print(f"=== 02 metric records: site {site} ===")
-    src = cohort_source.resolve(site, rebuild=args.rebuild, require_stage=args.require_stage)
+    # Reuse whatever stage 1 resolved. Re-resolving here would re-run the upstream build under
+    # --rebuild, paying the waterfall cost a second time for an identical result.
+    src = (cohort_source.recorded(bc.phi_dir(site) / "cohort" / "source.json")
+           or cohort_source.resolve(site, rebuild=args.rebuild, require_stage=args.require_stage))
     cfg = src.cfg(site)
     D = bc.decisions(site)
 

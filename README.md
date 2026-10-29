@@ -215,6 +215,14 @@ Stage 1 resolves its input in three tiers and reports which it used:
    Expect a full waterfall rebuild and ~1 GB of output.
 3. **fail** — no usable cache and no readable `data_path`, with remediation text.
 
+Only stage 0 resolves the source; it records the result and later stages reuse it, so a cold build
+runs **once** per invocation rather than once per stage.
+
+**Verified at UChicago.** A cached run and a `--rebuild` run produce **identical panels** — all 195
+cells x 28 columns, checked by `code/06_compare_tiers.py`. Measured cost: 12m27s cached vs 17m19s
+cold, of which the upstream build (encounter stitching + the clifpy waterfall over 4,034,216
+respiratory_support rows) is 5m15s and writes 1.1 GB.
+
 ---
 
 ## Pipeline steps

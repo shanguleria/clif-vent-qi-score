@@ -74,14 +74,18 @@ def main() -> int:
     if not problems:
         for col in a.columns:
             x, y = a[col], b[col]
-            if pd.api.types.is_numeric_dtype(x) and pd.api.types.is_numeric_dtype(y):
+            # bool is "numeric" to pandas but does not support `-`; compare it as a value.
+            numeric = (pd.api.types.is_numeric_dtype(x) and pd.api.types.is_numeric_dtype(y)
+                       and not pd.api.types.is_bool_dtype(x) and not pd.api.types.is_bool_dtype(y))
+            if numeric:
                 same = ((x - y).abs() <= 1e-9) | (x.isna() & y.isna())
+                detail = f"max |delta| {(x - y).abs().max()}"
             else:
                 same = (x.astype("string") == y.astype("string")) | (x.isna() & y.isna())
+                detail = "value mismatch"
             bad = int((~same).sum())
             if bad:
-                problems.append(f"{col}: {bad} cells differ (max |delta| "
-                                f"{(x - y).abs().max() if pd.api.types.is_numeric_dtype(x) else 'n/a'})")
+                problems.append(f"{col}: {bad} cells differ ({detail})")
 
     if problems:
         print("\n  FAIL — the cache is NOT equivalent to a cold build:")
