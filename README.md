@@ -248,6 +248,7 @@ respiratory_support rows) is 5m15s and writes 1.1 GB.
 | 5 | `code/05_verify_equivalence.py` | `final_no_phi/verification.json` — cross-run equivalence vs the dashboard's persisted output |
 | 7 | `code/07_analysis_dataset.py` | `analysis/analysis_dataset.{csv,parquet}` — one row per patient for the outcome model |
 | 6 | `code/06_compare_tiers.py` | `tier_comparison/` — on demand, proves a cold build reproduces the cached-tier panel exactly |
+| 8 | `code/08_outcome_model.R` | `final_no_phi/08_outcome_model/` — **skeleton**, run in R after the Python pipeline |
 
 Stages 0-5 and 7 run on every build via the runner. Stage 6 is a verification tool invoked
 manually around a `--rebuild` run:
@@ -278,7 +279,8 @@ clif-vent-qi-score/
 │   ├── cohort_source.py        # stage-cache validation / cold upstream build / hard fail
 │   ├── attribution.py          # ICU intervals by location_name; hour + day attribution
 │   └── scoring.py              # pooled rates, composite, floor flags
-├── code/                       # 00..07, each standalone-runnable
+├── code/                       # 00..07 Python, each standalone-runnable
+│   └── 08_outcome_model.R      #   the outcome model (R; skeleton)
 ├── tests/                      # synthetic frames, no CLIF data
 │   ├── test_scoring.py         #   pooled rates, composite, grain, attribution
 │   ├── test_cohort_source.py   #   stage-cache completeness + decision matching
