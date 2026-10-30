@@ -269,3 +269,51 @@ def test_a_metric_with_no_records_degrades_instead_of_raising():
     full, _ = S.composite(panel, W4)
     assert core.iloc[0] == pytest.approx(100 * (0.8 + 0.5 + 0.5) / 3)
     assert np.isnan(full.iloc[0])
+
+
+# --------------------------------------------------------------------------- #
+# grain
+# --------------------------------------------------------------------------- #
+def test_pooling_the_window_is_not_the_mean_of_period_rates():
+    """The unit score re-divides summed counts; it is NOT the average of the quarterly rates.
+
+    This is what stops a near-empty quarter from pulling a unit's score around, which matters at
+    UChicago where one unit came online mid-window with 11 IMV hours across five quarters.
+    """
+    c = contrib([
+        # a huge quarter at 90%, and a 1-hour quarter at 0%
+        ("ltvv", "MICU", "2023-Q1", "b1", "p1", 900, 1000),
+        ("ltvv", "MICU", "2023-Q2", "b2", "p2", 0, 1),
+    ])
+    per_period = S.cell_totals(c, ("unit_name", "period"))["ltvv_rate"]
+    pooled = S.cell_totals(c, ("unit_name",))["ltvv_rate"].iloc[0]
+    assert sorted(per_period.round(4)) == [0.0, 0.9]
+    assert pooled == pytest.approx(900 / 1001)              # 0.8991
+    assert pooled != pytest.approx(per_period.mean())        # the mean would be 0.45
+    assert abs(pooled - per_period.mean()) > 0.4
+
+
+def test_unit_grain_collapses_periods_but_keeps_units_separate():
+    c = contrib([
+        ("ltvv", "MICU", "2023-Q1", "b1", "p1", 8, 10),
+        ("ltvv", "MICU", "2023-Q2", "b2", "p2", 2, 10),
+        ("ltvv", "SICU", "2023-Q1", "b3", "p3", 1, 4),
+    ])
+    t = S.cell_totals(c, ("unit_name",)).set_index("unit_name")
+    assert len(t) == 2
+    assert t.loc["MICU", "ltvv_den"] == 20 and t.loc["MICU", "ltvv_rate"] == pytest.approx(0.5)
+    assert t.loc["SICU", "ltvv_den"] == 4
+
+
+def test_leave_one_out_at_unit_grain_removes_all_of_a_patients_periods():
+    c = contrib([
+        ("ltvv", "MICU", "2023-Q1", "b1", "p1", 5, 5),
+        ("ltvv", "MICU", "2023-Q2", "b2", "p1", 5, 5),   # same patient, later quarter
+        ("ltvv", "MICU", "2023-Q1", "b3", "p2", 0, 10),
+        ("sat", "MICU", "2023-Q1", "b3", "p2", 1, 2),
+        ("sbt", "MICU", "2023-Q1", "b3", "p2", 1, 2),
+    ])
+    loo = S.leave_one_out(c, W3, group=("unit_name",)).set_index("patient_id")
+    # cell is 10/20; p1 contributed 10/10 across TWO quarters -> both must go
+    assert loo.loc["p1", "ltvv_den"] == 10
+    assert loo.loc["p1", "ltvv_rate"] == pytest.approx(0.0)

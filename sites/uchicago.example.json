@@ -1,27 +1,34 @@
 {
   "_comment": "Per-site profile. Copy to sites/<site>.json (gitignored) and edit. Shared clinical definitions live in definitions/ (committed) and are NOT edited per site. Run: ./run_scores.sh --site <site>. Output -> output/<site>/.",
-
   "site_id": "UChicago",
   "dataset_name": "UChicago_CLIF",
   "clif_version": "2.1.0",
   "_comment_clif_version": "The CLIF SPEC version, which is what cross-site pooling keys on. A conversion/dataset release (e.g. MIMIC-IV-Ext-CLIF 1.1.0) goes in `dataset_version` instead; never write it here and never call it 'CLIF 1.1.0'.",
   "dataset_version": null,
   "timezone": "America/Chicago",
-
   "data_path": "<absolute path to your CLIF 2.1.0 table folder>",
   "file_format": "parquet",
   "file_prefix": "clif_",
-
   "stage_dir": null,
   "_comment_stage_dir": "OPTIONAL cache: a clif-dashboards respiratory build's stage/ folder (stitched encounters, IMV episodes, the clifpy waterfall). When present AND decision-matched it is reused, skipping the re-stitch and re-waterfall. When null, missing, incomplete, or built under different decisions, the cohort is rebuilt from data_path by invoking the upstream builder. Never a hard dependency.",
   "workers": 4,
-
   "period": "quarter",
-  "_comment_period": "Panel grain: 'quarter' or 'month'. Quarter is the default because monthly rates on a single ICU are often built on very few eligible vent-days.",
-
-  "min_denominator": {"ltvv": 100, "sat": 20, "sbt": 20, "prone_12h": 5},
-  "_comment_min_denominator": "Per-metric denominator floor below which a unit-period cell is FLAGGED (low_denominator), not dropped. Keys must match definitions/composite.json metrics; an unclaimed key is a hard error.",
-
+  "_comment_period": "Secondary panel grain: 'quarter' or 'month'. The PRIMARY exposure is pooled over all available time per unit and has no period dimension.",
+  "min_denominator": {
+    "_comment": "Per-GRAIN, per-metric denominator floor below which a cell is FLAGGED (never dropped). Keys under each grain must be composite metrics; an unclaimed key is a hard error. Quarter floors are ~1/28 of the unit floors, matching the 28-quarter window.",
+    "unit": {
+      "ltvv": 2000,
+      "sat": 500,
+      "sbt": 500,
+      "prone_12h": 20
+    },
+    "unit_period": {
+      "ltvv": 100,
+      "sat": 20,
+      "sbt": 20,
+      "prone_12h": 5
+    }
+  },
   "unit_include": null,
   "_comment_unit_include": "null = every adt row with location_category='icu'. A list restricts to those location_name values verbatim.",
   "unit_collapse": {},

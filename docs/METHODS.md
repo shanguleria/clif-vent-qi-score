@@ -131,6 +131,18 @@ them is a deliberate choice — it is real care, but not care any ICU can be sco
 
 ## 4. Scoring
 
+**Grain.** The primary exposure is one score per ICU, pooled over every available period
+(`unit_panel.csv`). A unit x period panel is retained for sensitivity (`unit_period_panel.csv`).
+Pooling the window re-divides the SUMMED counts rather than averaging the periodic rates, so a
+near-empty period cannot move the unit score — material here because one unit came online
+mid-window with 11 IMV hours across its first five quarters.
+
+Coarsening also changes what the four-metric score can support: the proning denominator rises from
+a median of 2 PROSEVA-eligible patients per unit-quarter to 11-191 per unit, so `score_full` is
+computable for every unit and for 11,702/11,702 patients, against 153/195 cells and 10,508 patients
+at quarter grain.
+<!-- src: code/03_build_panel.py output, [unit] vs [unit_period] blocks; code/04_exposure_assignment.py output -->
+
 **Pooled rates.** `rate = sum(numerator) / sum(denominator)` over the cell — never a mean of
 per-patient percentages. So a unit-quarter's LTVV rate is hour-weighted and its SAT/SBT rates are
 vent-day-weighted, matching upstream's aggregation (`clif_dash/server/aggregate.py`).
@@ -210,8 +222,11 @@ patient accrued the most **vent-days** (`sat` denominator — the grain SAT and 
 | SBT denominator (attributed) | 61,309 vent-days | `code/03_build_panel.py` `[contributions]` |
 | SBT pooled rate (attributed) | 20.69% | `final_no_phi/verification.json` section [3] |
 | Proning cohort | 682 patients, 111 proned <= 12 h | `final_no_phi/verification.json` section [1] |
-| `score_core` computable | 193/195 cells, median 54.0 | `code/03_build_panel.py` `[panel]` |
-| `score_full` computable | 153/195 cells, median 43.1 | `code/03_build_panel.py` `[panel]` |
+| `score_core`, unit grain (PRIMARY) | 7/7 units, median 54.5, range 49.2-56.7 | `final_no_phi/unit_panel.csv` |
+| `score_full`, unit grain | 7/7 units, median 42.4, range 36.9-48.8 | `final_no_phi/unit_panel.csv` |
+| `score_core` computable, quarter grain | 193/195 cells, median 54.0 | `code/03_build_panel.py` `[unit_period]` |
+| `score_full` computable, quarter grain | 153/195 cells, median 43.1 | `code/03_build_panel.py` `[unit_period]` |
+| Rank agreement core vs full (unit grain) | Spearman 0.68 | computed from `unit_panel.parquet` |
 | Equivalence checks | 13/13 PASS, 0 episodes differing | `final_no_phi/verification.json` |
 | Cached vs cold-build panel | identical, 195 cells x 28 columns | `code/06_compare_tiers.py --compare` |
 | Runtime, cached / cold | 12m27s / 17m19s (build 5m15s, 1.1 GB) | `output/uchicago/run_timings.csv` |

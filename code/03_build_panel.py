@@ -1,14 +1,25 @@
-"""Stage 3 — roll the metric records up into a unit x period panel with composite scores.
+"""Stage 3 — roll the metric records up into composite scores, at two grains.
+
+  unit_panel.csv          PRIMARY exposure: one score per ICU, pooled over all available time
+  unit_period_panel.csv   SECONDARY: the same scores per ICU x calendar period, for sensitivity
+
+Pooling over all available time is what makes the primary exposure stable. It also fixes two
+artifacts that the per-period panel cannot: a unit that came online mid-window (N08S has 11 IMV
+hours across its first five quarters, then thousands) no longer produces a score off three
+patient-days, and the proning denominator rises from a median of 2 patients per unit-quarter to
+11-191 per unit, which is what makes the four-metric score defensible at all.
 
 Builds the canonical contribution table (one row per metric x unit-period x patient-episode), then
-pools it into the panel. Pooling is sum(num)/sum(den), so a unit-quarter's LTVV rate is
-hour-weighted and its SAT/SBT rates are vent-day-weighted — matching the upstream's aggregation
-rather than averaging per-patient percentages.
+pools it at each grain. Pooling is sum(num)/sum(den) over the whole cell, so LTVV is hour-weighted
+and SAT/SBT are vent-day-weighted — matching the upstream's aggregation rather than averaging
+per-patient percentages. Pooling the WHOLE window is not the mean of the quarterly rates: it
+re-divides the summed counts, so a thin quarter cannot pull the unit score around.
 
 Writes:
   intermediate_phi/panel/contributions.parquet   row-level, carries patient_id — NEVER shared
-  final_no_phi/unit_period_panel.csv             the panel (aggregate by construction)
-  final_no_phi/unit_period_panel.parquet
+  final_no_phi/unit_panel.{csv,parquet}          PRIMARY, one row per ICU
+  final_no_phi/unit_period_panel.{csv,parquet}   SECONDARY, one row per ICU x period
+  final_no_phi/*_anonymized.csv                  both, with location_name stripped
   final_no_phi/panel_provenance.json
 
 Records that fell in no named ICU stay (IMV on the ward, in the OR, or in the ED) are reported and
@@ -32,7 +43,7 @@ from common import scoring as S                                        # noqa: E
 
 from clif_dash.upstream import metrics as up_metrics                   # noqa: E402
 
-GROUP = ("unit_name", "period")
+CONTRIB_GROUP = ("unit_name", "period")
 
 #: Row-level identifiers that must never appear in a shareable artifact. Checked by execution on
 #: every run, because "the panel is aggregate by construction" is an assumption a future column
@@ -110,14 +121,14 @@ def build_contributions(site: str, ltvv_threshold: float) -> tuple[pd.DataFrame,
     return contrib, dropped
 
 
-def supplementary_ltvv(site: str, thresholds, primary) -> pd.DataFrame:
+def supplementary_ltvv(site: str, thresholds, primary, group) -> pd.DataFrame:
     """LTVV rates at the other selectable thresholds, for sensitivity. Not part of any score."""
     ltvv = pd.read_parquet(bc.phi_dir(site) / "records" / "ltvv_hours.parquet")
     ltvv = ltvv[ltvv["unit_name"] != attr.UNATTRIBUTED]
     keys = {t: up_metrics.ltvv_key(t) for t in thresholds if t != primary}
     if not keys:
-        return pd.DataFrame(columns=list(GROUP))
-    agg = (ltvv.groupby(list(GROUP), observed=True)
+        return pd.DataFrame(columns=list(group))
+    agg = (ltvv.groupby(list(group), observed=True)
            .agg(_den=("vt_pbw", "size"), **{f"_n{t}": (k, "sum") for t, k in keys.items()})
            .reset_index())
     for t in keys:
@@ -125,12 +136,51 @@ def supplementary_ltvv(site: str, thresholds, primary) -> pd.DataFrame:
     return agg.drop(columns=["_den"] + [f"_n{t}" for t in keys])
 
 
+def build_panel(contrib, grain, site, *, scale, selectable, primary, unit_id, log=print):
+    """Pool the contribution table at one grain and attach composite scores and floor flags."""
+    group = list(bc.GROUP_COLS[grain])
+    panel = S.cell_totals(contrib, tuple(group))
+
+    # A metric with no records at all (e.g. a site with no `position` table cannot observe proning)
+    # must degrade to an empty column, not a KeyError three functions later. Scores that include it
+    # then correctly evaluate to NaN, and the gap is reported rather than inferred from a traceback.
+    absent = [m for m in bc.metric_ids() if f"{m}_den" not in panel.columns]
+    for m in absent:
+        panel[f"{m}_num"] = 0
+        panel[f"{m}_den"] = 0
+        panel[f"{m}_rate"] = float("nan")
+    if absent:
+        log(f"  NOTE: no records for {', '.join(absent)} at this site — "
+            f"any score including them will be null. Check the source tables exist.")
+
+    # Composite scores. Iterate the config's own score keys so adding one is never a no-op.
+    for score_id in bc.score_ids():
+        w = bc.weights(score_id)
+        sc, n = S.composite(panel, w, scale=scale)
+        panel[score_id] = sc.round(2)
+        panel[f"{score_id}_n_components"] = n
+
+    floors = bc.min_denominator(grain, site)
+    panel = S.flag_low_denominator(panel, floors,
+                                   scores={s: bc.weights(s) for s in bc.score_ids()})
+
+    panel["unit_id"] = panel["unit_name"].map(unit_id)
+    supp = supplementary_ltvv(site, selectable, primary, group)
+    if len(supp):
+        panel = panel.merge(supp, on=group, how="left")
+    for c in [c for c in panel.columns if c.endswith("_rate") or c.startswith("ltvv_rate_at_")]:
+        panel[c] = panel[c].round(4)
+
+    front = [c for c in ("unit_id", "unit_name", "period") if c in panel.columns]
+    panel = panel[front + [c for c in panel.columns if c not in front]]
+    return panel.sort_values(group).reset_index(drop=True), floors
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--site")
     args = ap.parse_args()
     site = bc.active_site(args.site)
-    prof = bc.load_profile(site)
     comp = bc.load_composite()
     scale = comp.get("scale", 100)
 
@@ -146,61 +196,13 @@ def main() -> int:
         m = contrib[contrib["metric"] == metric]
         d = dropped.get(metric, {})
         print(f"  {metric:<10} den={int(m['den'].sum()):>8,}  num={int(m['num'].sum()):>8,}  "
-              f"cells={m.groupby(list(GROUP)).ngroups:>4}  "
               f"unattributed_den_dropped={d.get('denominator_unattributed', 0):,}")
 
-    panel = S.cell_totals(contrib, GROUP)
-
-    # A metric with no records at all (e.g. a site with no `position` table cannot observe proning)
-    # must degrade to an empty column, not a KeyError three functions later. Scores that include it
-    # then correctly evaluate to NaN, and the gap is reported rather than inferred from a traceback.
-    absent = [m for m in bc.metric_ids() if f"{m}_den" not in panel.columns]
-    for m in absent:
-        panel[f"{m}_num"] = 0
-        panel[f"{m}_den"] = 0
-        panel[f"{m}_rate"] = float("nan")
-    if absent:
-        print(f"\n  NOTE: no records for {', '.join(absent)} at this site — "
-              f"any score including them will be null. Check the source tables exist.")
-
-    # Composite scores. Iterate the config's own score keys so adding one is never a no-op.
-    for score_id in bc.score_ids():
-        w = bc.weights(score_id)
-        s, n = S.composite(panel, w, scale=scale)
-        panel[score_id] = s.round(2)
-        panel[f"{score_id}_n_components"] = n
-    panel = S.flag_low_denominator(panel, prof.get("min_denominator", {}) or {},
-                                   scores={s: bc.weights(s) for s in bc.score_ids()})
-
-    # Anonymized unit labels. `location_name` is a site's internal nomenclature; consortium
-    # deliverables refer to units only as "Unit 1..n". Numbering is by total LTVV denominator
-    # (descending, then name) so it is deterministic across reruns. The crosswalk stays site-local.
-    volume = (panel.groupby("unit_name", observed=True)["ltvv_den"].sum()
-              .sort_values(ascending=False))
+    # Anonymized unit labels, numbered by total LTVV volume so the mapping is identical at both
+    # grains and deterministic across reruns. The crosswalk stays site-local.
+    volume = contrib[contrib["metric"] == "ltvv"].groupby("unit_name", observed=True)["den"].sum()
     order = sorted(volume.index, key=lambda u: (-volume[u], u))
     unit_id = {u: f"Unit {i}" for i, u in enumerate(order, 1)}
-    panel["unit_id"] = panel["unit_name"].map(unit_id)
-
-    supp = supplementary_ltvv(site, selectable, primary)
-    if len(supp):
-        panel = panel.merge(supp, on=list(GROUP), how="left")
-
-    for c in [c for c in panel.columns if c.endswith("_rate") or c.startswith("ltvv_rate_at_")]:
-        panel[c] = panel[c].round(4)
-    panel = panel.sort_values(list(GROUP)).reset_index(drop=True)
-
-    # ---- report effective floors BY EXECUTION, not by reading the config ----
-    print(f"\n[panel] {len(panel):,} unit-period cells "
-          f"({panel['unit_name'].nunique()} units x {panel['period'].nunique()} periods)")
-    for metric, floor in (prof.get("min_denominator", {}) or {}).items():
-        n = int(panel[f"{metric}_low"].sum())
-        print(f"  floor {metric:<10} den < {floor:<4} flagged {n:>4} / {len(panel)} cells")
-    for score_id in bc.score_ids():
-        ok = int(panel[score_id].notna().sum())
-        low = int(panel[f"{score_id}_low"].sum())
-        print(f"  {score_id:<12} computable in {ok}/{len(panel)} cells  "
-              f"(median {panel[score_id].median():.1f})  "
-              f"below its own floors: {low}")
 
     phi_out = bc.phi_dir(site) / "panel"
     phi_out.mkdir(parents=True, exist_ok=True)
@@ -209,24 +211,50 @@ def main() -> int:
      .to_csv(phi_out / "unit_crosswalk.csv", index=False))
 
     share = bc.share_dir(site)
-    front = ["unit_id", "unit_name", "period"]
-    panel = panel[front + [c for c in panel.columns if c not in front]]
-    panel.to_parquet(share / "unit_period_panel.parquet", index=False)
-    panel.to_csv(share / "unit_period_panel.csv", index=False)
-    # Anonymized twin for anything leaving the site (manuscripts, posters, coordinating centre).
-    panel.drop(columns=["unit_name"]).to_csv(share / "unit_period_panel_anonymized.csv", index=False)
+    written, prov_grains = [], {}
+    for grain in bc.GRAINS:
+        panel, floors = build_panel(contrib, grain, site, scale=scale, selectable=selectable,
+                                    primary=primary, unit_id=unit_id)
+        role = "PRIMARY" if grain == "unit" else "secondary"
+        shape = (f"{panel['unit_name'].nunique()} units"
+                 if grain == "unit" else
+                 f"{panel['unit_name'].nunique()} units x {panel['period'].nunique()} periods")
+        print(f"\n[{grain}] {role} — {len(panel):,} cells ({shape})")
+        # Report effective floors BY EXECUTION: how many cells each one actually flagged.
+        for metric, floor in floors.items():
+            n = int(panel[f"{metric}_low"].sum())
+            print(f"  floor {metric:<10} den < {floor:<5} flagged {n:>4} / {len(panel)} cells")
+        for score_id in bc.score_ids():
+            ok = int(panel[score_id].notna().sum())
+            low = int(panel[f"{score_id}_low"].sum())
+            med = panel[score_id].median()
+            print(f"  {score_id:<12} computable in {ok}/{len(panel)}  "
+                  f"median {med:.1f}  below its own floors: {low}")
+
+        stem = f"{grain}_panel"
+        panel.to_parquet(share / f"{stem}.parquet", index=False)
+        panel.to_csv(share / f"{stem}.csv", index=False)
+        panel.drop(columns=["unit_name"]).to_csv(share / f"{stem}_anonymized.csv", index=False)
+        written.append(stem)
+        prov_grains[grain] = {
+            "role": role.lower(), "group": list(bc.GROUP_COLS[grain]), "cells": int(len(panel)),
+            "min_denominator": floors,
+            "scores_computable": {s: int(panel[s].notna().sum()) for s in bc.score_ids()},
+        }
+
     (share / "panel_provenance.json").write_text(json.dumps({
         "provenance": bc.provenance(site),
         "composite": {s: comp["scores"][s] for s in bc.score_ids()},
         "ltvv_threshold_ml_kg": primary,
-        "min_denominator": prof.get("min_denominator", {}),
+        "grains": prov_grains,
         "unattributed": dropped,
-        "cells": int(len(panel)),
-        "units": int(panel["unit_name"].nunique()),
-        "periods": int(panel["period"].nunique()),
+        "units": len(unit_id),
     }, indent=2, default=str))
+
     phi_gate(share)
-    print(f"\n  wrote {share}/unit_period_panel.csv  (+ _anonymized.csv, unit names stripped)")
+    print(f"\n  wrote {share}/")
+    for stem in written:
+        print(f"    {stem}.csv / .parquet / _anonymized.csv")
     print(f"  unit crosswalk kept site-local in {phi_out}/unit_crosswalk.csv")
     return 0
 

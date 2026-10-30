@@ -14,8 +14,18 @@ quality score per unit-period.
 
 ## Objective
 
-Produce a **unit x period panel of composite quality scores** suitable for use as an exposure in a
-downstream outcome model, plus a per-patient exposure assignment with leave-one-out variants.
+Produce a **composite quality score per ICU** suitable for use as an exposure in a downstream
+outcome model, plus a per-patient exposure assignment with leave-one-out variants.
+
+Two grains are emitted from the same contribution table:
+
+| Grain | File | Role |
+|---|---|---|
+| **unit** | `unit_panel.csv` | **PRIMARY exposure** — one score per ICU, pooled over all available time |
+| unit x period | `unit_period_panel.csv` | secondary — the same scores per quarter, for sensitivity / time-varying analysis |
+
+Pooling the whole window is **not** the mean of the periodic rates: it re-divides the summed
+numerators and denominators, so a near-empty quarter cannot pull a unit's score around.
 
 **This is not a dashboard.** The metric definitions come from
 [`AartikSarma/clif-dashboards`](https://github.com/AartikSarma/clif-dashboards), pinned at commit
@@ -140,8 +150,8 @@ cp sites/uchicago.example.json sites/<site>.json   # then edit data_path
 | `file_prefix` / `file_format` | Default `clif_` / `parquet` |
 | `timezone` | Site-local tz; all calendar days and periods are binned in it |
 | `stage_dir` | **Optional** cache — a `clif-dashboards` respiratory build's `stage/` folder. `null` is fine |
-| `period` | `quarter` (default) or `month` |
-| `min_denominator` | Per-metric floor below which a cell is **flagged**, not dropped |
+| `period` | Grain of the **secondary** panel: `quarter` (default) or `month`. The primary has no period dimension |
+| `min_denominator` | Nested by grain (`unit`, `unit_period`), then by metric: the denominator floor below which a cell is **flagged**, not dropped. Stated per grain because a quarter-calibrated floor can never bind on a seven-year pooled denominator |
 | `unit_include` / `unit_collapse` | Restrict to, or pool, specific `location_name` values |
 
 `definitions/` is also what the upstream builder reads: the generated site YAML points
@@ -154,8 +164,9 @@ Stage 0 re-diffs `definitions/` against the pinned upstream commit and fails lou
 |---|---|---|
 | `output/<site>/intermediate_phi/` | Row-level records, contributions, per-patient exposure, unit crosswalk | **Never** |
 | `output/<site>/upstream_build/` | Stage cache written by a cold build (~1 GB) | **Never** |
-| `output/<site>/final_no_phi/unit_period_panel.csv` | The panel — aggregate by construction | Yes, site-internal |
-| `output/<site>/final_no_phi/unit_period_panel_anonymized.csv` | Same, with `location_name` stripped (`Unit 1..n` only) | **Yes — use this externally** |
+| `output/<site>/final_no_phi/unit_panel.csv` | **The primary exposure** — one row per ICU | Yes, site-internal |
+| `output/<site>/final_no_phi/unit_period_panel.csv` | Secondary, one row per ICU x period | Yes, site-internal |
+| `output/<site>/final_no_phi/*_anonymized.csv` | Both, with `location_name` stripped (`Unit 1..n` only) | **Yes — use these externally** |
 | `output/<site>/final_no_phi/verification.json` | Equivalence check results | Yes |
 | `output/<site>/run_timings.csv` | Per-stage wall clock + git SHA | Yes |
 
@@ -218,8 +229,8 @@ Stage 1 resolves its input in three tiers and reports which it used:
 Only stage 0 resolves the source; it records the result and later stages reuse it, so a cold build
 runs **once** per invocation rather than once per stage.
 
-**Verified at UChicago.** A cached run and a `--rebuild` run produce **identical panels** — all 195
-cells x 28 columns, checked by `code/06_compare_tiers.py`. Measured cost: 12m27s cached vs 17m19s
+**Verified at UChicago.** A cached run and a `--rebuild` run produce **identical panels** at both
+grains — 7 cells x 27 columns and 195 cells x 28 columns, checked by `code/06_compare_tiers.py`. Measured cost: 12m27s cached vs 17m19s
 cold, of which the upstream build (encounter stitching + the clifpy waterfall over 4,034,216
 respiratory_support rows) is 5m15s and writes 1.1 GB.
 
@@ -232,8 +243,8 @@ respiratory_support rows) is 5m15s and writes 1.1 GB.
 | 0 | `code/00_probe_units.py` | Aggregate-only probe: definition hashes, composite coverage, config-key coverage, ICU unit inventory, panel shape |
 | 1 | `code/01_build_cohort.py` | `cohort/` — episodes with period labels, IMV runs, encounters, ICU intervals keyed by `location_name` |
 | 2 | `code/02_metric_records.py` | `records/` — `ltvv_hours`, `vent_days`, `prone_patients`, each attributed to a unit; asserts equivalence per chunk |
-| 3 | `code/03_build_panel.py` | `panel/contributions.parquet` + `final_no_phi/unit_period_panel.{csv,parquet}` |
-| 4 | `code/04_exposure_assignment.py` | `exposure/` — per-patient exposure, long and primary-cell, with leave-one-out |
+| 3 | `code/03_build_panel.py` | `panel/contributions.parquet` + `final_no_phi/{unit,unit_period}_panel.{csv,parquet}` at both grains |
+| 4 | `code/04_exposure_assignment.py` | `exposure/exposure_{unit,unit_period}_{long,primary}.parquet` — per-patient exposure with leave-one-out |
 | 5 | `code/05_verify_equivalence.py` | `final_no_phi/verification.json` — cross-run equivalence vs the dashboard's persisted output |
 | 6 | `code/06_compare_tiers.py` | `tier_comparison/` — on demand, proves a cold build reproduces the cached-tier panel exactly |
 

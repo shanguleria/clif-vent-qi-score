@@ -61,6 +61,32 @@ def source_info() -> dict:
     return yaml.safe_load((DEFINITIONS / "SOURCE").read_text())
 
 
+#: Panel grains. "unit" pools every available period into one score per ICU and is the PRIMARY
+#: exposure; "unit_period" keeps the time dimension and is retained for sensitivity analysis.
+GRAINS = ("unit", "unit_period")
+
+#: Grouping columns for each grain.
+GROUP_COLS = {"unit": ("unit_name",), "unit_period": ("unit_name", "period")}
+
+
+def min_denominator(grain: str, site: str | None = None) -> dict[str, float]:
+    """Per-metric denominator floors for one grain.
+
+    Floors are stated per grain because a quarter-calibrated floor can never bind on a denominator
+    pooled over seven years — and a config key that cannot bind is a policy declaration the next
+    reader will trust.
+    """
+    if grain not in GRAINS:
+        raise ValueError(f"grain must be one of {GRAINS}, got {grain!r}")
+    floors = load_profile(site).get("min_denominator") or {}
+    if grain not in floors:
+        raise KeyError(
+            f"sites/{active_site(site)}.json min_denominator has no '{grain}' block; "
+            f"found {[k for k in floors if not k.startswith('_')]}"
+        )
+    return {k: v for k, v in floors[grain].items() if not k.startswith("_")}
+
+
 def metric_ids() -> list[str]:
     """Every metric the composite spec declares. Iterate THIS, never a hardcoded list."""
     return list(load_composite()["metrics"])

@@ -8,7 +8,8 @@ Usage:
     ./run_scores.sh --site <site> --rebuild
     .venv/bin/python code/06_compare_tiers.py --compare           # after it
 
-The snapshot lands in output/<site>/tier_comparison/ (aggregate panels only, no PHI).
+Both grains (unit and unit x period) are compared. The snapshot lands in
+output/<site>/tier_comparison/ (aggregate panels only, no PHI).
 """
 from __future__ import annotations
 
@@ -22,7 +23,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import bundle_config as bc                                             # noqa: E402
 
-PANEL = "unit_period_panel.parquet"
+#: Both grains are compared; the cache must reproduce every shareable panel.
+PANELS = ("unit_panel.parquet", "unit_period_panel.parquet")
 
 
 def snapshot_dir(site) -> Path:
@@ -39,30 +41,41 @@ def main() -> int:
     ap.add_argument("--label", default="tier1", help="name for the snapshot")
     args = ap.parse_args()
     site = bc.active_site(args.site)
-    current = bc.share_dir(site) / PANEL
-    snap = snapshot_dir(site) / f"{args.label}_{PANEL}"
-
     if args.snapshot:
-        if not current.exists():
-            print(f"  no panel at {current} to snapshot"); return 1
-        shutil.copy2(current, snap)
-        provenance = (bc.share_dir(site) / "panel_provenance.json")
+        for panel in PANELS:
+            current = bc.share_dir(site) / panel
+            if not current.exists():
+                print(f"  no panel at {current} to snapshot"); return 1
+            shutil.copy2(current, snapshot_dir(site) / f"{args.label}_{panel}")
+            print(f"  snapshot '{args.label}' {panel}: {len(pd.read_parquet(current)):,} cells")
+        provenance = bc.share_dir(site) / "panel_provenance.json"
         if provenance.exists():
             shutil.copy2(provenance, snapshot_dir(site) / f"{args.label}_panel_provenance.json")
-        n = len(pd.read_parquet(snap))
-        print(f"  snapshot '{args.label}': {n:,} cells -> {snap}")
         return 0
 
     if not args.compare:
         ap.error("pass --snapshot or --compare")
-    if not snap.exists():
-        print(f"  no snapshot at {snap}; run --snapshot first"); return 1
 
-    a = pd.read_parquet(snap).sort_values(["unit_name", "period"]).reset_index(drop=True)
-    b = pd.read_parquet(current).sort_values(["unit_name", "period"]).reset_index(drop=True)
     print(f"=== tier comparison: site {site} ===")
-    print(f"  baseline ({args.label}) : {len(a):,} cells, {len(a.columns)} columns")
-    print(f"  current              : {len(b):,} cells, {len(b.columns)} columns")
+    failed = 0
+    for panel in PANELS:
+        rc = compare_one(site, panel, args.label)
+        failed += rc
+    return 1 if failed else 0
+
+
+def compare_one(site, panel, label) -> int:
+    snap = snapshot_dir(site) / f"{label}_{panel}"
+    current = bc.share_dir(site) / panel
+    if not snap.exists():
+        print(f"\n  {panel}: no snapshot at {snap}; run --snapshot first")
+        return 1
+    key = [c for c in ("unit_name", "period") if c in pd.read_parquet(snap).columns]
+    a = pd.read_parquet(snap).sort_values(key).reset_index(drop=True)
+    b = pd.read_parquet(current).sort_values(key).reset_index(drop=True)
+    print(f"\n  {panel}  keyed on {key}")
+    print(f"    baseline ({label}) : {len(a):,} cells, {len(a.columns)} columns")
+    print(f"    current            : {len(b):,} cells, {len(b.columns)} columns")
 
     problems = []
     if list(a.columns) != list(b.columns):
@@ -88,12 +101,11 @@ def main() -> int:
                 problems.append(f"{col}: {bad} cells differ ({detail})")
 
     if problems:
-        print("\n  FAIL — the cache is NOT equivalent to a cold build:")
+        print("    FAIL — not equivalent to the baseline:")
         for p in problems:
-            print(f"    {p}")
+            print(f"      {p}")
         return 1
-    print(f"\n  PASS — all {len(a):,} cells x {len(a.columns)} columns identical.")
-    print("  The stage cache holds nothing the cold build does not recompute.")
+    print(f"    PASS — all {len(a):,} cells x {len(a.columns)} columns identical.")
     return 0
 
 
