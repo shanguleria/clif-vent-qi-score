@@ -88,19 +88,30 @@ def check_composite_coverage() -> bool:
 
 
 def check_min_denominator(site) -> bool:
-    """min_denominator keys must all be live composite metrics (config-integrity rule)."""
+    """Every min_denominator key must be a live composite metric, at every grain.
+
+    Floors are nested by grain (`unit`, `unit_period`) because a quarter-calibrated floor can
+    never bind on a seven-year pooled denominator. Both blocks are checked, since a key that is
+    live at one grain and dead at the other is still a silent no-op where it is dead.
+    """
     print("\n[config] min_denominator coverage")
     declared = set(bc.metric_ids())
-    configured = bc.load_profile(site).get("min_denominator", {}) or {}
     ok = True
-    for key, val in configured.items():
-        if key in declared:
-            print(f"  ok   {key:<10} floor={val}")
-        else:
-            print(f"  FAIL {key}: in site profile but not a composite metric — it would be a no-op")
+    for grain in bc.GRAINS:
+        try:
+            floors = bc.min_denominator(grain, site)
+        except KeyError as exc:
+            print(f"  FAIL {grain}: {exc}")
             ok = False
-    for m in sorted(declared - set(configured)):
-        print(f"  WARN {m}: no floor configured; cells will never be flagged low_denominator")
+            continue
+        for key, val in floors.items():
+            if key in declared:
+                print(f"  ok   {grain:<12} {key:<10} floor={val}")
+            else:
+                print(f"  FAIL {grain}: '{key}' is not a composite metric — the floor is a no-op")
+                ok = False
+        for m in sorted(declared - set(floors)):
+            print(f"  WARN {grain}: no floor for '{m}'; cells will never be flagged")
     return ok
 
 
