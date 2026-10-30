@@ -63,6 +63,7 @@ run_stage code/01_build_cohort.py
 run_stage code/02_metric_records.py
 run_stage code/03_build_panel.py
 run_stage code/04_exposure_assignment.py
+run_stage code/07_analysis_dataset.py
 [[ "$SKIP_VERIFY" -eq 1 ]] || run_stage code/05_verify_equivalence.py
 
 TOTAL=$((SECONDS - T0))

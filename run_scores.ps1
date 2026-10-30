@@ -57,6 +57,7 @@ Invoke-Stage "code\01_build_cohort.py"
 Invoke-Stage "code\02_metric_records.py"
 Invoke-Stage "code\03_build_panel.py"
 Invoke-Stage "code\04_exposure_assignment.py"
+Invoke-Stage "code\07_analysis_dataset.py"
 if (-not $SkipVerify) { Invoke-Stage "code\05_verify_equivalence.py" }
 $total.Stop()
 

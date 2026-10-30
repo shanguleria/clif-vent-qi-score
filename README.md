@@ -162,7 +162,7 @@ Stage 0 re-diffs `definitions/` against the pinned upstream commit and fails lou
 
 | Path | Contents | Shareable? |
 |---|---|---|
-| `output/<site>/intermediate_phi/` | Row-level records, contributions, per-patient exposure, unit crosswalk | **Never** |
+| `output/<site>/intermediate_phi/` | Row-level records, contributions, per-patient exposure, the analysis dataset, unit crosswalk | **Never** |
 | `output/<site>/upstream_build/` | Stage cache written by a cold build (~1 GB) | **Never** |
 | `output/<site>/final_no_phi/unit_panel.csv` | **The primary exposure** — one row per ICU | Yes, site-internal |
 | `output/<site>/final_no_phi/unit_period_panel.csv` | Secondary, one row per ICU x period | Yes, site-internal |
@@ -246,10 +246,11 @@ respiratory_support rows) is 5m15s and writes 1.1 GB.
 | 3 | `code/03_build_panel.py` | `panel/contributions.parquet` + `final_no_phi/{unit,unit_period}_panel.{csv,parquet}` at both grains |
 | 4 | `code/04_exposure_assignment.py` | `exposure/exposure_{unit,unit_period}_{long,primary}.parquet` — per-patient exposure |
 | 5 | `code/05_verify_equivalence.py` | `final_no_phi/verification.json` — cross-run equivalence vs the dashboard's persisted output |
+| 7 | `code/07_analysis_dataset.py` | `analysis/analysis_dataset.{csv,parquet}` — one row per patient for the outcome model |
 | 6 | `code/06_compare_tiers.py` | `tier_comparison/` — on demand, proves a cold build reproduces the cached-tier panel exactly |
 
-Stages 0-5 run on every build via the runner. Stage 6 is a verification tool invoked manually
-around a `--rebuild` run:
+Stages 0-5 and 7 run on every build via the runner. Stage 6 is a verification tool invoked
+manually around a `--rebuild` run:
 
 ```bash
 .venv/bin/python code/06_compare_tiers.py --site uchicago --snapshot
@@ -277,7 +278,7 @@ clif-vent-qi-score/
 │   ├── cohort_source.py        # stage-cache validation / cold upstream build / hard fail
 │   ├── attribution.py          # ICU intervals by location_name; hour + day attribution
 │   └── scoring.py              # pooled rates, composite, floor flags
-├── code/                       # 00..06, each standalone-runnable
+├── code/                       # 00..07, each standalone-runnable
 ├── tests/                      # synthetic frames, no CLIF data
 │   ├── test_scoring.py         #   pooled rates, composite, grain, attribution
 │   ├── test_cohort_source.py   #   stage-cache completeness + decision matching
