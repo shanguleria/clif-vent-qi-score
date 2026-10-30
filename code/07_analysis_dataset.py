@@ -45,6 +45,8 @@ import bundle_config as bc                                             # noqa: E
 from common import attribution as attr                                 # noqa: E402
 from common import cohort_source                                       # noqa: E402
 
+from common import sofa_crrt                                           # noqa: E402
+
 from clif_dash import stage                                            # noqa: E402
 from clif_dash.upstream import clif_io                                 # noqa: E402
 
@@ -65,17 +67,16 @@ SOFA_AFTER = pd.Timedelta(hours=4)
 #: The score that becomes `qclif`.
 QCLIF_SCORE = "score_core"
 
-#: SOFA component -> the sofa2 output columns that feed it. Used to report WHY a component is
-#: absent: clifpy scores a missing component as 0, i.e. as normal, so a charting gap is
-#: indistinguishable from health in the total unless the inputs are inspected directly.
+#: SOFA subscore -> the raw value(s) that feed it. Used to report WHY a component is absent: a
+#: missing component is summed as 0, i.e. as normal, so a charting gap is indistinguishable from
+#: health in the total unless the inputs are inspected directly.
 SOFA_INPUTS = {
-    "sofa2_brain":  ["gcs_min"],
-    "sofa2_resp":   ["pf_ratio", "sf_ratio", "pao2_at_worst", "spo2_at_worst",
-                     "fio2_at_worst", "device_category"],
-    "sofa2_cv":     ["map_min", "norepi_epi_maxsum", "dopa_max"],
-    "sofa2_liver":  ["bilirubin_total"],
-    "sofa2_kidney": ["creatinine", "uo_score"],
-    "sofa2_hemo":   ["platelet_count"],
+    "sofa_cns":    ["gcs_total"],
+    "sofa_resp":   ["pf", "sf"],
+    "sofa_cv_97":  ["map", "nee"],
+    "sofa_liver":  ["bilirubin_total"],
+    "sofa_renal":  ["creatinine"],
+    "sofa_coag":   ["platelet_count"],
 }
 
 
@@ -269,32 +270,33 @@ def main() -> int:
           f"({int((cohort['cci'] == 0).sum()):,} with no coded comorbidity)")
 
     # ---- 5. SOFA over the intubation window ---------------------------------
-    from clifpy.utils.sofa2 import calculate_sofa2
     win = cohort[["encounter_block", "intubation_dttm"]].copy()
     win["start_dttm"] = win["intubation_dttm"] - SOFA_BEFORE
     win["end_dttm"] = win["intubation_dttm"] + SOFA_AFTER
-    print(f"[sofa] computing over [-{int(SOFA_BEFORE.total_seconds()//3600)} h, "
-          f"+{int(SOFA_AFTER.total_seconds()//3600)} h] around intubation for {len(win):,} patients")
-    # Hand sofa2 a cohort whose encounter_block dtype MATCHES the mapping's. norm_block() makes
-    # ours a string while the staged mapping is int32; DuckDB casts across the two today, but an
-    # id join that relies on implicit casting is the same class of bug as the "1" vs "1.0" trap.
-    sofa_cohort = win[["encounter_block", "start_dttm", "end_dttm"]].copy()
-    sofa_map = mapping.copy()
-    sofa_cohort["encounter_block"] = sofa_cohort["encounter_block"].astype("int64")
-    sofa_map["encounter_block"] = sofa_map["encounter_block"].astype("int64")
-    sofa = calculate_sofa2(sofa_cohort, clif_config_path=str(clifpy_config(site)),
-                           id_name="encounter_block", id_mapping=sofa_map)
-    sofa["encounter_block"] = attr.norm_block(sofa["encounter_block"])
-    comp = [c for c in sofa.columns if c.startswith("sofa2_") and c != "sofa2_total"]
-    inputs = [i for v in SOFA_INPUTS.values() for i in v if i in sofa.columns]
-    cohort = cohort.merge(
-        sofa[["encounter_block", "sofa2_total"] + comp + inputs]
-        .rename(columns={"sofa2_total": "sofa"}),
-        on="encounter_block", how="left")
+    print(f"[sofa] classic SOFA over [-{int(SOFA_BEFORE.total_seconds()//3600)} h, "
+          f"+{int(SOFA_AFTER.total_seconds()//3600)} h] around intubation")
+    mp2 = mapping.copy()
+    mp2["hospitalization_id"] = mp2["hospitalization_id"].astype(str)
+    mp2["encounter_block"] = attr.norm_block(mp2["encounter_block"])
+    sofa = sofa_crrt.compute(src, cfg, mp2, win, bc.load_profile(site)["data_path"],
+                             bc.load_profile(site)["timezone"])
+    comp = sofa_crrt.SUBSCORES
+    keep = ["encounter_block", "sofa_total", "sofa_total_raw", "sofa_n_components",
+            "sofa_resp_raw", "oxy_source"] + comp + sofa_crrt.COMPONENT_VALUES
+    keep = [c for c in dict.fromkeys(keep) if c in sofa.columns]
+    cohort = cohort.merge(sofa[keep].rename(columns={"sofa_total": "sofa"}),
+                          on="encounter_block", how="left")
+    inputs = [c for v in SOFA_INPUTS.values() for c in v if c in cohort.columns]
     print(f"       sofa median {cohort['sofa'].median():.0f} "
           f"(IQR {cohort['sofa'].quantile(.25):.0f}-{cohort['sofa'].quantile(.75):.0f}, "
-          f"range {cohort['sofa'].min():.0f}-{cohort['sofa'].max():.0f}); "
-          f"missing {int(cohort['sofa'].isna().sum()):,}")
+          f"range {cohort['sofa'].min():.0f}-{cohort['sofa'].max():.0f})")
+    if "sofa_resp_raw" in cohort:
+        a = cohort["sofa_resp_raw"].notna().mean(); b = cohort["sofa_resp"].notna().mean()
+        print(f"       respiratory component: {100*a:.1f}% from raw-table P/F -> "
+              f"{100*b:.1f}% using waterfall FiO2 with S/F fallback")
+        print(f"       oxygenation source: "
+              f"{cohort['oxy_source'].value_counts(dropna=False).to_dict()}")
+
     # ---- 6. write -----------------------------------------------------------
     COLUMNS = ["patient_id", "died", "death_dttm", "unit_name", "qclif",
                "age_at_admission", "cci", "sofa"]
@@ -304,10 +306,16 @@ def main() -> int:
     df.to_parquet(out / "analysis_dataset.parquet", index=False)
     df.to_csv(out / "analysis_dataset.csv", index=False)
 
-    extended = ["unit_id", "encounter_block", "hospitalization_id", "intubation_dttm",
+    extended = (["unit_id", "encounter_block", "hospitalization_id", "intubation_dttm",
                 "admission_dttm", "discharge_dttm", "discharge_category",
-                "icu_hours_in_unit", "icu_hours_total", "n_icus", "sex_category"] + comp + inputs
-    cohort[COLUMNS + [c for c in extended if c in cohort.columns]].to_parquet(
+                "icu_hours_in_unit", "icu_hours_total", "n_icus", "sex_category",
+                "sofa_total_raw", "sofa_resp_raw", "sofa_n_components", "oxy_source"]
+               + comp + sofa_crrt.COMPONENT_VALUES + inputs)
+    ext_cols = [c for c in dict.fromkeys(extended) if c in cohort.columns]
+    missing_ext = [c for c in sofa_crrt.COMPONENT_VALUES if c not in cohort.columns]
+    if missing_ext:
+        raise AssertionError(f"component covariates absent from the cohort: {missing_ext}")
+    cohort[COLUMNS + ext_cols].to_parquet(
         out / "analysis_dataset_extended.parquet", index=False)
 
     missingness_report(cohort, cohort, comp, out)
@@ -320,12 +328,16 @@ def main() -> int:
                                   "OR death_dttm <= discharge + 1 day",
                     "deaths": int(df["died"].sum()), "rate": round(float(df["died"].mean()), 4)},
         "qclif": {"source": f"unit_panel.{QCLIF_SCORE}", "missing": int(df["qclif"].isna().sum())},
-        "sofa": {"window_hours": [-24, 4], "implementation": "clifpy calculate_sofa2 (6 organ)",
+        "sofa": {"window_hours": [-24, 4],
+                 "implementation": f"classic SOFA, CLIF-epidemiology-of-CRRT "
+                                   f"sofa_calculator.py @ {sofa_crrt.CRRT_COMMIT}",
+                 "respiratory": "recomputed from waterfall FiO2, P/F with S/F fallback "
+                                "(Rice 2007 equivalents)",
                  "missing": int(df["sofa"].isna().sum()),
                  "component_absent_pct": {c: round(100 * float(cohort[c].isna().mean()), 2)
                                           for c in comp},
                  "all_components_present": int(cohort[comp].notna().all(axis=1).sum()),
-                 "note": "a missing component is scored 0 by clifpy, i.e. as normal"},
+                 "note": "a missing subscore is summed as 0, i.e. as normal"},
         "complete_cases": int(len(complete)),
     }, indent=2, default=str))
 
