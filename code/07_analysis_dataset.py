@@ -275,9 +275,16 @@ def main() -> int:
     win["end_dttm"] = win["intubation_dttm"] + SOFA_AFTER
     print(f"[sofa] computing over [-{int(SOFA_BEFORE.total_seconds()//3600)} h, "
           f"+{int(SOFA_AFTER.total_seconds()//3600)} h] around intubation for {len(win):,} patients")
-    sofa = calculate_sofa2(win[["encounter_block", "start_dttm", "end_dttm"]],
-                           clif_config_path=str(clifpy_config(site)),
-                           id_name="encounter_block", id_mapping=mapping)
+    # Hand sofa2 a cohort whose encounter_block dtype MATCHES the mapping's. norm_block() makes
+    # ours a string while the staged mapping is int32; DuckDB casts across the two today, but an
+    # id join that relies on implicit casting is the same class of bug as the "1" vs "1.0" trap.
+    sofa_cohort = win[["encounter_block", "start_dttm", "end_dttm"]].copy()
+    sofa_map = mapping.copy()
+    sofa_cohort["encounter_block"] = sofa_cohort["encounter_block"].astype("int64")
+    sofa_map["encounter_block"] = sofa_map["encounter_block"].astype("int64")
+    sofa = calculate_sofa2(sofa_cohort, clif_config_path=str(clifpy_config(site)),
+                           id_name="encounter_block", id_mapping=sofa_map)
+    sofa["encounter_block"] = attr.norm_block(sofa["encounter_block"])
     comp = [c for c in sofa.columns if c.startswith("sofa2_") and c != "sofa2_total"]
     inputs = [i for v in SOFA_INPUTS.values() for i in v if i in sofa.columns]
     cohort = cohort.merge(
