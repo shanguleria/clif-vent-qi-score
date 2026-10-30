@@ -1,12 +1,12 @@
-"""Pooled rates, the equal-weight composite, and leave-one-out exposure.
+"""Pooled rates and the equal-weight composite.
 
 Everything is derived from one canonical long table, the *contribution* table:
 
     metric | unit_name | period | encounter_block | patient_id | num | den
 
-One row per (metric, unit-period, patient-contribution). The panel is its sum; leave-one-out is
-the panel minus one patient's own rows. Deriving both from the same table means a patient can never
-be counted in one and missed in the other.
+One row per (metric, cell, patient-contribution). The panel is its sum, at whichever grain the
+caller groups by; the per-patient contributions are what let stage 4 assign each patient to the
+cell where they accrued the most ventilated time.
 
 Rates are POOLED — `sum(num) / sum(den)` — never a mean of per-patient percentages, matching the
 upstream's aggregation (`clif_dash/server/aggregate.py`). Scores are a weighted mean of pooled
@@ -102,51 +102,3 @@ def flag_low_denominator(frame: pd.DataFrame, floors: dict[str, float],
         out[f"{score_id}_low"] = out[cols].any(axis=1) if cols else False
     out["low_denominator"] = out[flags].any(axis=1) if flags else False
     return out
-
-
-def leave_one_out(contrib: pd.DataFrame, weights: dict[str, float], *,
-                  group=("unit_name", "period"), scale: float = 100.0,
-                  require_all: bool = REQUIRE_ALL_COMPONENTS) -> pd.DataFrame:
-    """Per (patient, cell) score with that patient's own contributions removed.
-
-    A unit's measured quality partly reflects the care given to the very patient whose outcome is
-    being modelled, so regressing an outcome on the unadjusted cell rate builds in a mechanical
-    association. Subtracting the patient's own numerator and denominator removes it.
-
-    Cells where removing the patient leaves no denominator yield NaN for that metric, and a NaN
-    score under `require_all`.
-    """
-    group = list(group)
-    totals = (contrib.groupby(group + ["metric"], observed=True, dropna=False)[["num", "den"]]
-              .sum().rename(columns={"num": "cell_num", "den": "cell_den"}).reset_index())
-    own_agg = (contrib.groupby(group + ["metric", "patient_id"], observed=True, dropna=False)
-               [["num", "den"]].sum()
-               .rename(columns={"num": "own_num", "den": "own_den"}).reset_index())
-
-    # A patient who contributed NOTHING to a metric must still get that metric's LOO rate — which
-    # is simply the cell total, since removing zero changes nothing. Without the explicit grid the
-    # pivot leaves NaN there, and under require_all the whole score silently becomes NaN for every
-    # patient outside (say) the proning cohort.
-    pairs = contrib[group + ["patient_id"]].drop_duplicates()
-    grid = pairs.merge(pd.DataFrame({"metric": list(weights)}), how="cross")
-    own = grid.merge(own_agg, on=group + ["metric", "patient_id"], how="left")
-    own[["own_num", "own_den"]] = own[["own_num", "own_den"]].fillna(0.0)
-
-    merged = own.merge(totals, on=group + ["metric"], how="left")
-    merged["loo_num"] = merged["cell_num"] - merged["own_num"]
-    merged["loo_den"] = merged["cell_den"] - merged["own_den"]
-    merged["loo_rate"] = pooled_rate(merged["loo_num"], merged["loo_den"])
-
-    wide = merged.pivot_table(index=group + ["patient_id"], columns="metric",
-                              values=["loo_num", "loo_den", "loo_rate"], observed=True,
-                              dropna=False)
-    wide.columns = [f"{metric}_{kind.replace('loo_', '')}" for kind, metric in wide.columns]
-    wide = wide.reset_index()
-    for m in weights:
-        for kind in ("num", "den", "rate"):
-            if f"{m}_{kind}" not in wide.columns:
-                wide[f"{m}_{kind}"] = np.nan
-    score, ncomp = composite(wide, weights, scale=scale, require_all=require_all)
-    wide["loo_score"] = score
-    wide["loo_n_components"] = ncomp
-    return wide

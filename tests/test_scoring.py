@@ -1,4 +1,4 @@
-"""Unit tests for pooled rates, the composite, and leave-one-out. Synthetic frames, no CLIF data."""
+"""Unit tests for pooled rates, the composite and attribution. Synthetic frames, no CLIF data."""
 from __future__ import annotations
 
 import sys
@@ -100,52 +100,6 @@ def test_flag_low_denominator_rejects_an_unclaimed_config_key():
 
 
 # --------------------------------------------------------------------------- #
-# leave-one-out
-# --------------------------------------------------------------------------- #
-def test_leave_one_out_removes_the_patients_own_contribution():
-    # cell has 10/20 for ltvv; p1 contributed 6/10 -> LOO for p1 is 4/10 = 0.4
-    c = contrib([
-        ("ltvv", "MICU", "2023-Q1", "b1", "p1", 6, 10),
-        ("ltvv", "MICU", "2023-Q1", "b2", "p2", 4, 10),
-        ("sat",  "MICU", "2023-Q1", "b1", "p1", 1, 2),
-        ("sat",  "MICU", "2023-Q1", "b2", "p2", 1, 2),
-        ("sbt",  "MICU", "2023-Q1", "b1", "p1", 1, 2),
-        ("sbt",  "MICU", "2023-Q1", "b2", "p2", 1, 2),
-    ])
-    loo = S.leave_one_out(c, W3).set_index("patient_id")
-    assert loo.loc["p1", "ltvv_rate"] == pytest.approx(0.4)
-    assert loo.loc["p2", "ltvv_rate"] == pytest.approx(0.6)
-    # p1's LOO score uses p2's numbers only: ltvv 0.4, sat 0.5, sbt 0.5
-    assert loo.loc["p1", "loo_score"] == pytest.approx(100 * (0.4 + 0.5 + 0.5) / 3)
-
-
-def test_leave_one_out_is_nan_when_the_patient_is_the_whole_cell():
-    c = contrib([
-        ("ltvv", "BURN", "2023-Q1", "b9", "p9", 3, 5),
-        ("sat",  "BURN", "2023-Q1", "b9", "p9", 1, 1),
-        ("sbt",  "BURN", "2023-Q1", "b9", "p9", 1, 1),
-    ])
-    loo = S.leave_one_out(c, W3).set_index("patient_id")
-    assert loo.loc["p9", "ltvv_den"] == 0
-    assert np.isnan(loo.loc["p9", "ltvv_rate"])
-    assert np.isnan(loo.loc["p9", "loo_score"]), "no peers left means no exposure, not zero"
-
-
-def test_leave_one_out_pools_a_patients_multiple_episodes_in_one_cell():
-    # one patient, two episodes in the same cell: BOTH must be removed
-    c = contrib([
-        ("ltvv", "MICU", "2023-Q1", "b1", "p1", 2, 4),
-        ("ltvv", "MICU", "2023-Q1", "b2", "p1", 2, 4),
-        ("ltvv", "MICU", "2023-Q1", "b3", "p2", 1, 2),
-        ("sat",  "MICU", "2023-Q1", "b3", "p2", 1, 2),
-        ("sbt",  "MICU", "2023-Q1", "b3", "p2", 1, 2),
-    ])
-    loo = S.leave_one_out(c, W3).set_index("patient_id")
-    assert loo.loc["p1", "ltvv_den"] == 2, "both of p1's episodes must be subtracted"
-    assert loo.loc["p1", "ltvv_rate"] == pytest.approx(0.5)
-
-
-# --------------------------------------------------------------------------- #
 # attribution
 # --------------------------------------------------------------------------- #
 def _icu():
@@ -206,36 +160,6 @@ def test_period_label_month_grain():
 def test_period_label_rejects_an_unknown_grain():
     with pytest.raises(ValueError, match="quarter"):
         attr.period_label(pd.Series([pd.Timestamp("2023-01-01", tz="UTC")]), "UTC", "fortnight")
-
-
-def test_leave_one_out_uses_the_full_cell_rate_for_a_metric_the_patient_missed():
-    """A patient outside the proning cohort still has a proning exposure: the cell's own rate.
-
-    Removing a zero contribution changes nothing, so their LOO prone rate is the cell total. If
-    this returned NaN, `require_all` would null the score for every patient not in the rare
-    cohort — which at UChicago is ~96% of them.
-    """
-    W4 = {"ltvv": 0.25, "sat": 0.25, "sbt": 0.25, "prone_12h": 0.25}
-    c = contrib([
-        ("ltvv", "MICU", "2023-Q1", "b1", "p1", 8, 10),
-        ("sat", "MICU", "2023-Q1", "b1", "p1", 1, 2),
-        ("sbt", "MICU", "2023-Q1", "b1", "p1", 1, 2),
-        ("ltvv", "MICU", "2023-Q1", "b2", "p2", 2, 10),
-        ("sat", "MICU", "2023-Q1", "b2", "p2", 1, 2),
-        ("sbt", "MICU", "2023-Q1", "b2", "p2", 1, 2),
-        # only p2 is in the proning cohort
-        ("prone_12h", "MICU", "2023-Q1", "b2", "p2", 1, 1),
-    ])
-    loo = S.leave_one_out(c, W4).set_index("patient_id")
-    # p1 contributed nothing to proning -> their LOO prone rate is the whole cell: 1/1
-    assert loo.loc["p1", "prone_12h_den"] == 1
-    assert loo.loc["p1", "prone_12h_rate"] == pytest.approx(1.0)
-    assert not np.isnan(loo.loc["p1", "loo_score"])
-    # p2 WAS the whole proning cohort -> removing them leaves nothing
-    assert loo.loc["p2", "prone_12h_den"] == 0
-    assert np.isnan(loo.loc["p2", "prone_12h_rate"])
-    assert np.isnan(loo.loc["p2", "loo_score"])
-
 
 def test_flag_low_denominator_scopes_flags_to_each_scores_own_metrics():
     frame = pd.DataFrame({"ltvv_den": [500], "sat_den": [50], "sbt_den": [50], "prone_12h_den": [1]})
@@ -303,17 +227,3 @@ def test_unit_grain_collapses_periods_but_keeps_units_separate():
     assert len(t) == 2
     assert t.loc["MICU", "ltvv_den"] == 20 and t.loc["MICU", "ltvv_rate"] == pytest.approx(0.5)
     assert t.loc["SICU", "ltvv_den"] == 4
-
-
-def test_leave_one_out_at_unit_grain_removes_all_of_a_patients_periods():
-    c = contrib([
-        ("ltvv", "MICU", "2023-Q1", "b1", "p1", 5, 5),
-        ("ltvv", "MICU", "2023-Q2", "b2", "p1", 5, 5),   # same patient, later quarter
-        ("ltvv", "MICU", "2023-Q1", "b3", "p2", 0, 10),
-        ("sat", "MICU", "2023-Q1", "b3", "p2", 1, 2),
-        ("sbt", "MICU", "2023-Q1", "b3", "p2", 1, 2),
-    ])
-    loo = S.leave_one_out(c, W3, group=("unit_name",)).set_index("patient_id")
-    # cell is 10/20; p1 contributed 10/10 across TWO quarters -> both must go
-    assert loo.loc["p1", "ltvv_den"] == 10
-    assert loo.loc["p1", "ltvv_rate"] == pytest.approx(0.0)

@@ -15,7 +15,7 @@ quality score per unit-period.
 ## Objective
 
 Produce a **composite quality score per ICU** suitable for use as an exposure in a downstream
-outcome model, plus a per-patient exposure assignment with leave-one-out variants.
+outcome model, plus a per-patient exposure assignment.
 
 Two grains are emitted from the same contribution table:
 
@@ -244,7 +244,7 @@ respiratory_support rows) is 5m15s and writes 1.1 GB.
 | 1 | `code/01_build_cohort.py` | `cohort/` — episodes with period labels, IMV runs, encounters, ICU intervals keyed by `location_name` |
 | 2 | `code/02_metric_records.py` | `records/` — `ltvv_hours`, `vent_days`, `prone_patients`, each attributed to a unit; asserts equivalence per chunk |
 | 3 | `code/03_build_panel.py` | `panel/contributions.parquet` + `final_no_phi/{unit,unit_period}_panel.{csv,parquet}` at both grains |
-| 4 | `code/04_exposure_assignment.py` | `exposure/exposure_{unit,unit_period}_{long,primary}.parquet` — per-patient exposure with leave-one-out |
+| 4 | `code/04_exposure_assignment.py` | `exposure/exposure_{unit,unit_period}_{long,primary}.parquet` — per-patient exposure |
 | 5 | `code/05_verify_equivalence.py` | `final_no_phi/verification.json` — cross-run equivalence vs the dashboard's persisted output |
 | 6 | `code/06_compare_tiers.py` | `tier_comparison/` — on demand, proves a cold build reproduces the cached-tier panel exactly |
 
@@ -276,10 +276,10 @@ clif-vent-qi-score/
 ├── common/
 │   ├── cohort_source.py        # stage-cache validation / cold upstream build / hard fail
 │   ├── attribution.py          # ICU intervals by location_name; hour + day attribution
-│   └── scoring.py              # pooled rates, composite, leave-one-out
+│   └── scoring.py              # pooled rates, composite, floor flags
 ├── code/                       # 00..06, each standalone-runnable
 ├── tests/                      # synthetic frames, no CLIF data
-│   ├── test_scoring.py         #   pooled rates, composite, leave-one-out, attribution
+│   ├── test_scoring.py         #   pooled rates, composite, grain, attribution
 │   ├── test_cohort_source.py   #   stage-cache completeness + decision matching
 │   └── test_phi_gate.py        #   the shareable-output identifier gate actually fires
 ├── docs/METHODS.md             # definitions, deviations, known caveats

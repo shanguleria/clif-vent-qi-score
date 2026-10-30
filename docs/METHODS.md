@@ -1,7 +1,7 @@
 # Methods — ventilator QI composite score
 
 Companion to [`../README.md`](../README.md). Covers what each metric means, the one place this
-pipeline deviates from upstream, how the composite and leave-one-out exposure are formed, and the
+pipeline deviates from upstream, how the composite and the per-patient exposure are formed, and the
 caveats a reader should know before using the score.
 
 Definitions are those of [`AartikSarma/clif-dashboards`](https://github.com/AartikSarma/clif-dashboards)
@@ -160,20 +160,13 @@ the *wrong* filter for `score_core` — at UChicago the proning floor alone mark
 none of which bears on `score_core`.
 <!-- src: output of code/03_build_panel.py — floor prone_12h flagged 139/195; score_core below its own floors 8/195 -->
 
-**Leave-one-out.** A unit's measured quality partly reflects the care given to the very patient
-whose outcome is being modelled, so regressing an outcome on the raw cell rate builds in a
-mechanical association. The LOO rate removes **all** of that patient's numerator and denominator
-from the cell:
-
-```
-loo_rate = (cell_num - own_num) / (cell_den - own_den)
-```
-
-A patient who contributed nothing to a metric keeps the cell's full rate for it (removing zero
-changes nothing). Where removing the patient leaves no denominator, the rate and the score are null
-— not zero. At UChicago the median `|score_core - LOO|` is 0.08 points, p95 0.56, max 23.67: small
-on average, but the tail is exactly where it matters.
-<!-- src: output of code/04_exposure_assignment.py — score_core LOO computable 14,988/14,991 -->
+**No leave-one-out adjustment.** An earlier version subtracted each patient's own numerator and
+denominator from their cell before scoring, to remove the mechanical component of an
+exposure-outcome association. It was dropped once the primary exposure moved to unit grain: with
+22,871-183,392 IMV hours and 1,469-8,905 SAT-eligible vent-days per unit, one patient's own care
+moved their own exposure by a median of 0.000 and at most 1.44 points. The correction was a
+quarter-grain concern and is immaterial here.
+<!-- src: code/04_exposure_assignment.py output before removal, [unit] grain: median |score - LOO| 0.000, p95 0.020, max 1.440 -->
 
 **Exposure assignment.** 20.9% of patients contribute to more than one cell, so two artifacts are
 emitted: a long `(patient, cell)` table, and a primary-cell assignment using the cell where the

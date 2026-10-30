@@ -116,8 +116,8 @@ def build_contributions(site: str, ltvv_threshold: float) -> tuple[pd.DataFrame,
     contrib = pd.concat(parts, ignore_index=True)
     missing_pid = int(contrib["patient_id"].isna().sum())
     if missing_pid:
-        raise AssertionError(f"{missing_pid} contribution rows have no patient_id; "
-                             f"leave-one-out would silently under-remove")
+        raise AssertionError(f"{missing_pid} contribution rows have no patient_id; stage 4 could "
+                             f"not assign those patients to a primary unit")
     return contrib, dropped
 
 
