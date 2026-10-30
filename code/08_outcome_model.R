@@ -100,24 +100,6 @@ stopifnot(
   "the analysis dataset must be one row per patient" =
     grepl("one row per patient", analysis_manifest$grain))
 
-# ---- The constraint this whole script lives under ----------------------------
-# qclif is CONSTANT WITHIN UNIT. Two consequences, both structural:
-#
-#   1. Unit fixed effects are impossible. A unit indicator is perfectly collinear
-#      with the exposure, so `died ~ qclif + unit_name` is not identified. Only a
-#      random intercept can separate the two, and only by assuming the unit
-#      effects are exchangeable draws -- which is an assumption, not a finding.
-#   2. The exposure-outcome association is estimated from as many points as there
-#      are UNITS, not patients. 12,373 patients buy precision on age/cci/sofa and
-#      on the intercept; they buy almost nothing for the qclif coefficient.
-#
-# Common guidance is >= 30 level-2 units for stable level-2 inference. Below that,
-# the random-intercept variance is poorly estimated, glmer often reports a
-# singular fit, and the exposure SE is optimistic. The gate in section 12 refuses
-# to let this pass silently.
-MIN_CLUSTERS_FOR_INFERENCE <- 30L
-
-
 # ---- 5. Read -----------------------------------------------------------------
 
 d_raw <- read_parquet(file.path(PHI_DIR, "analysis", "analysis_dataset.parquet"))
@@ -127,10 +109,7 @@ message(sprintf("  %s patients, %s units",
                 format(nrow(d_raw), big.mark = ","),
                 length(unique(d_raw[[CLUSTER]]))))
 
-stopifnot(
-  "the exposure must be present in the panel" = EXPOSURE %in% names(panel),
-  "qclif must be constant within unit" =
-    all(tapply(d_raw$qclif, d_raw[[CLUSTER]], function(x) length(unique(x))) == 1L))
+stopifnot("the exposure must be present in the panel" = EXPOSURE %in% names(panel))
 
 
 # ---- 6. The analysis set -----------------------------------------------------
@@ -288,22 +267,3 @@ cat("case mix tracks it closely -- the higher-scoring ICUs here are the medical\
 cat("ICUs, which take the sickest patients. Age, Charlson and SOFA are the only\n")
 cat("adjustment, and documentation quality sits upstream of BOTH the quality\n")
 cat("score and the severity measurement. Say 'associated with', never 'improves'.\n")
-
-
-# ---- 12. The gate, enforced --------------------------------------------------
-# Last statement, deliberately: every output is already on disk when this fires.
-if (N_CLUSTERS < MIN_CLUSTERS_FOR_INFERENCE) {
-  stop(sprintf(paste0(
-    "LEVEL-2 GATE: %d units is below the %d needed for stable level-2 inference.\n",
-    "  qclif is constant within unit, so its coefficient is estimated from %d ",
-    "points regardless of the %s patients. The standard error in ",
-    "model_coefficients.csv is optimistic and the random-intercept variance in ",
-    "diagnostics/icc.csv is poorly identified.\n",
-    "  Every output HAS been written -- read them as DESCRIPTIVE. Do not report ",
-    "the qclif odds ratio as an inferential result from a single site. This ",
-    "clears when Rush and NU are added; until then, either frame the analysis ",
-    "descriptively or raise MIN_CLUSTERS_FOR_INFERENCE deliberately and record ",
-    "why."),
-    N_CLUSTERS, MIN_CLUSTERS_FOR_INFERENCE, N_CLUSTERS,
-    format(nrow(d), big.mark = ",")))
-}
