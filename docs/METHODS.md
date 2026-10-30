@@ -194,7 +194,22 @@ patient accrued the most **vent-days** (`sat` denominator — the grain SAT and 
 5. **`location_name` is optional and free text in CLIF 2.1.** It has no permissible-value list and
    may be absent, so this pipeline is not guaranteed to run at an arbitrary site. Stage 0 fails with
    a clear message rather than falling back silently.
-6. **A benign library warning.** `pandas 2.3.3` with `numpy 2.5.4` (the upstream's pins) emits
+6. **Respiratory SOFA is limited by paired FiO2, not by oxygenation.** The respiratory component
+   is absent for 8.9% of patients, and `sofa2_resp` is missing for exactly the set with no
+   `fio2_at_worst` — the two are identical. SpO2 is NOT the constraint: it is charted a median of
+   17 times per 28-hour window and absent for only 0.9% of patients. (`sofa2`'s `spo2_at_worst`
+   looks 80% missing only because it prefers P/F and populates the S/F branch solely as a
+   fallback; `pf_ratio` and `sf_ratio` are perfectly disjoint and sum to the component's
+   availability.) Both SOFA implementations need an FiO2 *concurrent with* the worst oxygenation
+   measurement, which is a stricter requirement than having an FiO2 somewhere in the window.
+   Cross-checked against an independent implementation
+   (`CLIF-epidemiology-of-CRRT/code/sofa_calculator.py`, commit `ec19204`), which reaches the same
+   conclusion from the other direction: for these patients it finds a usable paired `fio2_set` in
+   only 10% of cases, against 77% for patients `sofa2` can score. This is a property of the data,
+   not a library defect.
+   <!-- src: head-to-head run on a 4,000-patient sample; per-component availability sofa2 vs CRRT: resp 91.4%/64.0%, cv 95.2%/94.5%, liver 73.2%/69.1%, kidney 98.9%/97.5%, hemo 98.3%/97.5%, brain 99.4%/97.1%; total corr 0.75, mean |difference| 2.25 points -->
+
+7. **A benign library warning.** `pandas 2.3.3` with `numpy 2.5.4` (the upstream's pins) emits
    `DeprecationWarning: The 'generic' unit for NumPy timedelta is deprecated` from inside pandas'
    own `Timestamp` arithmetic. The unit at every call site here is explicit and the arithmetic is
    asserted correct in `tests/test_scoring.py`; the warning is filtered narrowly in stage 2.
