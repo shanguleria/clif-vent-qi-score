@@ -112,6 +112,12 @@ cat_tab <- data.frame(
   hi             = exp(-(u - 1.96 * se)))
 cat_tab$n <- unit_tab$n[match(cat_tab$unit_name, unit_tab$unit_name)]
 cat_tab$qclif <- unit_tab$qclif[match(cat_tab$unit_name, unit_tab$unit_name)]
+# Parker 2019 (JAMA 322:1789) Figure 2 classifies each centre against the MEAN
+# centre at p < .05 and colours it low / average / high. Here the reference is
+# the average unit, i.e. a random intercept of 0, so the test is whether the
+# 95% interval excludes OR = 1.
+cat_tab$group <- ifelse(cat_tab$hi < 1, "Below average",
+                 ifelse(cat_tab$lo > 1, "Above average", "Not distinguishable"))
 cat_tab <- cat_tab[order(cat_tab$or_survival), ]
 write.csv(cat_tab, file.path(out, "unit_effects.csv"), row.names = FALSE)
 
@@ -147,31 +153,40 @@ p <- ggplot(unit_tab, aes(x = label, y = deaths)) +
 ggsave(file.path(out, "deaths_by_unit.png"), p, width = 7.5, height = 4.5, dpi = 300)
 
 
-# Caterpillar. Units on y, odds ratio on x, log scale, reference at 1. Gridlines
-# run VERTICALLY here -- the house default is horizontal because x is usually
-# time, but on a forest the gridline has to meet the axis that carries the
-# estimate.
-cat_tab$label <- sprintf("%s  (n = %s)", cat_tab$unit_name,
+# Caterpillar, after Parker 2019 Figure 2: units ordered along the X axis, the
+# estimate and its 95% interval on Y, coloured by whether the unit is
+# distinguishable from the average. Gridlines are horizontal again here, since
+# the estimate is back on the y axis.
+GRP_COLOURS <- c("Below average"       = "#93331a",
+                 "Not distinguishable" = "#0b0b0b",
+                 "Above average"       = "#35649f")
+cat_tab$label <- sprintf("%s\nn = %s", cat_tab$unit_name,
                          format(cat_tab$n, big.mark = ",", trim = TRUE))
 cat_tab$label <- factor(cat_tab$label, levels = cat_tab$label)
+cat_tab$group <- factor(cat_tab$group, levels = names(GRP_COLOURS))
 
-cp <- ggplot(cat_tab, aes(x = or_survival, y = label)) +
-  geom_vline(xintercept = 1, colour = INK, linewidth = 0.4) +
-  geom_errorbarh(aes(xmin = lo, xmax = hi), height = 0.18,
-                 colour = INK, linewidth = 0.5) +
-  geom_point(size = 2.6, colour = INK) +
-  scale_x_continuous(trans = "log", breaks = c(0.5, 0.7, 1, 1.4, 2)) +
-  labs(x = "Odds ratio for survival vs the average ICU (adjusted for age, Charlson, SOFA)",
-       y = NULL) +
+cp <- ggplot(cat_tab, aes(x = label, y = or_survival, colour = group)) +
+  geom_hline(yintercept = 1, colour = INK, linewidth = 0.4) +
+  geom_errorbar(aes(ymin = lo, ymax = hi), width = 0.14, linewidth = 0.6) +
+  geom_point(size = 2.8) +
+  scale_y_continuous(trans = "log", breaks = c(0.5, 0.7, 1, 1.4, 2)) +
+  scale_colour_manual(values = GRP_COLOURS, drop = FALSE, name = NULL) +
+  labs(x = NULL,
+       y = "Odds ratio for survival vs the average ICU") +
   theme_minimal(base_size = 12) +
-  theme(axis.title = element_text(colour = INK),
+  theme(legend.position = "bottom",
+        legend.background = element_rect(fill = PAPER, colour = INK, linewidth = 0.3),
+        legend.margin = margin(t = 5, r = 8, b = 5, l = 8),
+        legend.box.margin = margin(t = 4),
+        legend.text = element_text(colour = INK, size = 9),
+        axis.title = element_text(colour = INK),
         axis.text = element_text(colour = INK),
         panel.grid.minor = element_blank(),
-        panel.grid.major.y = element_blank(),
-        panel.grid.major.x = element_line(colour = GRIDLINE, linewidth = 0.4),
+        panel.grid.major.x = element_blank(),
+        panel.grid.major.y = element_line(colour = GRIDLINE, linewidth = 0.4),
         plot.background = element_rect(fill = PAPER, colour = NA))
 
-ggsave(file.path(out, "unit_caterpillar.png"), cp, width = 7.5, height = 4, dpi = 300)
+ggsave(file.path(out, "unit_caterpillar.png"), cp, width = 7.5, height = 4.5, dpi = 300)
 
 writeLines(c(
   "# Figure captions",
@@ -187,10 +202,12 @@ writeLines(c(
   "mortality above each bar. Death is defined as a discharge category of Expired or",
   "Hospice, or a recorded death within one day of discharge.",
   "",
-  "**unit_caterpillar.png** — Conditional modes of the ICU random intercept from the",
-  "adjusted model (age, Charlson comorbidity index and SOFA), expressed as an odds",
-  "ratio for survival relative to the average ICU, with 95% intervals from the",
-  "conditional standard errors. Above 1 is better-than-average survival. Units are",
+  "**unit_caterpillar.png** — Caterpillar plot after Parker et al, JAMA 2019;322:1789,",
+  "Figure 2. Conditional modes of the ICU random intercept from the adjusted model",
+  "(age, Charlson comorbidity index and SOFA), expressed as an odds ratio for survival",
+  "relative to the average ICU, with 95% intervals from the conditional standard",
+  "errors. Units are coloured by whether that interval excludes 1, i.e. whether the",
+  "unit is distinguishable from the average unit at the 5% level. Units are",
   sprintf("ordered by point estimate; n per unit ranges %s to %s. The intervals are",
           format(min(cat_tab$n), big.mark = ","), format(max(cat_tab$n), big.mark = ",")),
   "comparative (conditional on the estimated between-unit variance), so they address",
