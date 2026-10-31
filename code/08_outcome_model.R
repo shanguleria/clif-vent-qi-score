@@ -49,12 +49,42 @@ cmp$model <- rownames(cmp)
 write.csv(cmp[, c("model", setdiff(names(cmp), "model"))],
           file.path(out, "model_comparison.csv"), row.names = FALSE)
 
-# Between-unit variance and ICC (latent scale, logistic link)
+# Between-unit variation, in four ways. The raw variance is on the log-odds
+# scale and is hard to read; MOR is the one to quote.
+#   icc  the share of LATENT variance that is between-unit. Its denominator
+#        carries the logistic distribution's fixed individual-level variance
+#        (pi^2/3 = 3.29), a floor that no amount of patient homogeneity lowers,
+#        so a substantial unit effect still gives a single-digit ICC. Hospital
+#        mortality ICCs in health-services research typically run 1-3%.
+#   mor  median odds ratio: take two patients with identical covariates from two
+#        randomly chosen units; this is the median ratio of their odds of death,
+#        higher unit over lower. Directly comparable to a fixed-effect OR.
+vc <- function(m) as.numeric(VarCorr(m)$unit_name)
 icc <- data.frame(model = c("m1", "m2", "m3"),
-                  between_unit_var = sapply(list(m1, m2, m3),
-                                            function(m) as.numeric(VarCorr(m)$unit_name)))
+                  adjustment = c("none", "age + cci + sofa",
+                                 "age + cci + sofa + qclif"),
+                  between_unit_var = sapply(list(m1, m2, m3), vc))
+icc$sd_logodds <- sqrt(icc$between_unit_var)
+icc$or_per_sd_unit <- exp(icc$sd_logodds)
 icc$icc <- icc$between_unit_var / (icc$between_unit_var + pi^2 / 3)
+icc$mor <- exp(sqrt(2 * icc$between_unit_var) * qnorm(0.75))
+# What the MOR is worth in SOFA points, the covariate with the clearest scale.
+icc$mor_in_sofa_points <- log(icc$mor) / fixef(m3)["sofa"]
+icc$var_explained_vs_m1 <- 1 - icc$between_unit_var / icc$between_unit_var[1]
 write.csv(icc, file.path(out, "icc.csv"), row.names = FALSE)
+
+writeLines(c(
+  "between_unit_var  variance of the unit random intercept, LOG-ODDS scale",
+  "sd_logodds        its square root; the typical distance of a unit from average",
+  "or_per_sd_unit    odds ratio for a unit one SD above average vs the average unit",
+  "icc               share of latent variance between units; denominator includes the",
+  "                  logistic fixed individual-level variance pi^2/3 = 3.29, so this",
+  "                  reads low by construction (1-3% is typical for hospital mortality)",
+  "mor               median odds ratio: median ratio of the odds of death for two",
+  "                  identical patients in two randomly chosen units. Quote this one.",
+  "mor_in_sofa_points  the MOR expressed as an equivalent number of SOFA points",
+  "var_explained_vs_m1 fraction of m1's between-unit variance removed by adjustment"
+), file.path(out, "icc_readme.txt"))
 
 # Unadjusted, per unit
 unit_tab <- aggregate(cbind(n = died, deaths = died) ~ unit_name, df,
@@ -65,6 +95,25 @@ unit_tab$mortality <- unit_tab$deaths / unit_tab$n
 unit_tab$qclif <- df$qclif[match(unit_tab$unit_name, df$unit_name)]
 unit_tab <- unit_tab[order(unit_tab$mortality), ]
 write.csv(unit_tab, file.path(out, "unit_summary.csv"), row.names = FALSE)
+
+
+# Per-unit effects (caterpillar). Conditional modes of the random intercept from
+# the ADJUSTED model, so these are unit differences left AFTER age, Charlson and
+# SOFA -- the unadjusted version would just redraw the bar chart. Reported as an
+# odds ratio for SURVIVAL, so above 1 is better than the average unit.
+re  <- ranef(m2, condVar = TRUE)$unit_name
+u   <- re[, 1]
+se  <- sqrt(as.numeric(attr(re, "postVar")))
+cat_tab <- data.frame(
+  unit_name = rownames(re),
+  logodds_death = u, se = se,
+  or_survival    = exp(-u),
+  lo             = exp(-(u + 1.96 * se)),
+  hi             = exp(-(u - 1.96 * se)))
+cat_tab$n <- unit_tab$n[match(cat_tab$unit_name, unit_tab$unit_name)]
+cat_tab$qclif <- unit_tab$qclif[match(cat_tab$unit_name, unit_tab$unit_name)]
+cat_tab <- cat_tab[order(cat_tab$or_survival), ]
+write.csv(cat_tab, file.path(out, "unit_effects.csv"), row.names = FALSE)
 
 
 # ---- Figure ------------------------------------------------------------------
@@ -97,6 +146,33 @@ p <- ggplot(unit_tab, aes(x = label, y = deaths)) +
 
 ggsave(file.path(out, "deaths_by_unit.png"), p, width = 7.5, height = 4.5, dpi = 300)
 
+
+# Caterpillar. Units on y, odds ratio on x, log scale, reference at 1. Gridlines
+# run VERTICALLY here -- the house default is horizontal because x is usually
+# time, but on a forest the gridline has to meet the axis that carries the
+# estimate.
+cat_tab$label <- sprintf("%s  (n = %s)", cat_tab$unit_name,
+                         format(cat_tab$n, big.mark = ",", trim = TRUE))
+cat_tab$label <- factor(cat_tab$label, levels = cat_tab$label)
+
+cp <- ggplot(cat_tab, aes(x = or_survival, y = label)) +
+  geom_vline(xintercept = 1, colour = INK, linewidth = 0.4) +
+  geom_errorbarh(aes(xmin = lo, xmax = hi), height = 0.18,
+                 colour = INK, linewidth = 0.5) +
+  geom_point(size = 2.6, colour = INK) +
+  scale_x_continuous(trans = "log", breaks = c(0.5, 0.7, 1, 1.4, 2)) +
+  labs(x = "Odds ratio for survival vs the average ICU (adjusted for age, Charlson, SOFA)",
+       y = NULL) +
+  theme_minimal(base_size = 12) +
+  theme(axis.title = element_text(colour = INK),
+        axis.text = element_text(colour = INK),
+        panel.grid.minor = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.major.x = element_line(colour = GRIDLINE, linewidth = 0.4),
+        plot.background = element_rect(fill = PAPER, colour = NA))
+
+ggsave(file.path(out, "unit_caterpillar.png"), cp, width = 7.5, height = 4, dpi = 300)
+
 writeLines(c(
   "# Figure captions",
   "",
@@ -109,7 +185,17 @@ writeLines(c(
   "as well as unit mortality;",
   "the denominator is printed under each unit and the unadjusted",
   "mortality above each bar. Death is defined as a discharge category of Expired or",
-  "Hospice, or a recorded death within one day of discharge."
+  "Hospice, or a recorded death within one day of discharge.",
+  "",
+  "**unit_caterpillar.png** — Conditional modes of the ICU random intercept from the",
+  "adjusted model (age, Charlson comorbidity index and SOFA), expressed as an odds",
+  "ratio for survival relative to the average ICU, with 95% intervals from the",
+  "conditional standard errors. Above 1 is better-than-average survival. Units are",
+  sprintf("ordered by point estimate; n per unit ranges %s to %s. The intervals are",
+          format(min(cat_tab$n), big.mark = ","), format(max(cat_tab$n), big.mark = ",")),
+  "comparative (conditional on the estimated between-unit variance), so they address",
+  "whether units differ from the average, not whether the variance itself is well",
+  "estimated — with 7 units the former is reasonably precise and the latter is not."
 ), file.path(out, "captions.md"))
 
 cat(sprintf("\nWrote %s\n", out))
