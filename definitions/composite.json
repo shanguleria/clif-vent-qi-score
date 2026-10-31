@@ -29,7 +29,7 @@
     }
   },
 
-  "_comment_scores": "score_core is the PRIMARY exposure. Proning is excluded from it because its denominator is a severity-defined cohort roughly two orders of magnitude smaller than the vent-day denominators (682 PROSEVA-eligible patients vs ~60,400 SAT vent-days at UChicago 2018-2024), so at equal weight it would dominate the composite's noise without contributing comparable signal. score_full is the prespecified sensitivity analysis including it. All four metrics are computed and stored regardless of score membership.",
+  "_comment_scores": "score_core is the PRIMARY exposure. Proning is excluded from it because its denominator is a severity-defined cohort typically orders of magnitude smaller than the vent-day denominators, so at equal weight it would dominate the composite's noise without contributing comparable signal. score_full is the prespecified sensitivity analysis including it. All four metrics are computed and stored regardless of score membership.",
   "scores": {
     "score_core": {
       "label": "Ventilator QI score (core)",

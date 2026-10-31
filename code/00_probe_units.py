@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -24,7 +25,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import bundle_config as bc                                             # noqa: E402
 from common import cohort_source                                       # noqa: E402
 
-UPSTREAM_CLONE = Path("/Users/shanguleria/Desktop/Research/CLIF/clif-dashboards")
+# Optional: only used to re-diff definitions/ against the pinned upstream commit.
+# Defaults to a sibling checkout; override with CLIF_DASHBOARDS_DIR.
+UPSTREAM_CLONE = Path(os.environ.get(
+    "CLIF_DASHBOARDS_DIR",
+    Path(__file__).resolve().parents[2] / "clif-dashboards"))
 
 
 def check_definitions() -> bool:

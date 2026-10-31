@@ -84,8 +84,7 @@ def flag_low_denominator(frame: pd.DataFrame, floors: dict[str, float],
 
     `scores` maps score id -> its weight map, giving `<score>_low` flagged only by the floors of
     the metrics that score actually uses. The global `low_denominator` ORs every floor, so for a
-    score that excludes a rare metric it is the wrong flag to filter on — at UChicago the proning
-    floor alone marks ~71% of cells, none of which affects score_core.
+    score that excludes a rare metric it is the wrong flag to filter on.
     """
     out = frame.copy()
     flags = []

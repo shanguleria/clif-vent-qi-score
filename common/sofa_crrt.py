@@ -8,8 +8,8 @@ that owns it; `CRRT_CODE_DIR` is where that checkout lives.
 Two changes on top of what the calculator returns:
 
   * respiratory  — recomputed from the waterfall FiO2 with a P/F -> S/F fallback (see
-                   common/oxygenation.py). Raw-table P/F covers 70.9% of this cohort; this covers
-                   92.1%, because the waterfall carries FiO2 across event-based gaps and S/F
+                   common/oxygenation.py), which covers substantially more of the cohort than
+                   raw-table P/F: the waterfall carries FiO2 across event-based gaps, and S/F
                    covers the pre-intubation window where no ventilator exists.
   * NEE          — norepinephrine-equivalents filled to 0 where no vasopressor was given. Absent
                    pressors is a true zero, unlike an absent bilirubin.
@@ -20,6 +20,7 @@ reflected in it.
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -29,8 +30,11 @@ import pandas as pd
 from . import attribution as attr
 from . import oxygenation as oxy
 
-CRRT_CODE_DIR = Path("/Users/shanguleria/Desktop/Research/CLIF/CRRT/crrt_tte/"
-                     "CLIF-epidemiology-of-CRRT/code")
+# Defaults to a sibling checkout of CLIF-epidemiology-of-CRRT; override with
+# CLIF_CRRT_CODE_DIR. Required -- stage 7 cannot compute SOFA without it.
+CRRT_CODE_DIR = Path(os.environ.get(
+    "CLIF_CRRT_CODE_DIR",
+    Path(__file__).resolve().parents[2] / "CLIF-epidemiology-of-CRRT" / "code"))
 CRRT_COMMIT = "ec19204"
 
 SUBSCORES = ["sofa_cv_97", "sofa_coag", "sofa_liver", "sofa_resp", "sofa_cns", "sofa_renal"]

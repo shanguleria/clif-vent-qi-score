@@ -1,20 +1,18 @@
 """Oxygenation for the SOFA respiratory component, computed from the waterfall.
 
 Both SOFA calculators load `respiratory_support` straight from the CLIF directory, where the table
-is EVENT-BASED: `fio2_set` appears only on rows where FiO2 was charted. In the 4 h after
-intubation, 628 of 1,685 IMV rows carry a null FiO2 — not because the ventilator had no setting,
-but because nothing changed and so nothing was written. Pairing an oxygenation measurement to
-those raw rows therefore fails far more often than the clinical reality warrants.
+is EVENT-BASED: `fio2_set` appears only on rows where FiO2 was charted, so many IMV rows carry a
+null not because the ventilator had no setting but because nothing changed and nothing was
+written. Pairing an oxygenation measurement against those raw rows fails far more often than the
+clinical reality warrants.
 
 The waterfall already solves this: it forward-fills `fio2_set` within mode blocks and lays down an
 hourly scaffold, so every ventilated hour carries the FiO2 then in force. This module pairs PaO2
 and SpO2 against that timeline instead.
 
 The second half of the problem is real and not fixable: the window opens 24 h BEFORE intubation,
-when there is no ventilator and FiO2 is genuinely absent (charted for ~10-31% of patients). SpO2
-is recorded throughout, so an S/F fallback covers the pre-intubation deterioration that P/F cannot.
-
-At UChicago this takes respiratory coverage from 70.9% (raw-table P/F) to 92.1%.
+when there is no ventilator and FiO2 is genuinely absent. SpO2 is recorded throughout, so an S/F
+fallback covers the pre-intubation deterioration that P/F cannot.
 """
 from __future__ import annotations
 

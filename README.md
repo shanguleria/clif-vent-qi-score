@@ -53,13 +53,12 @@ score_full = 100 x mean(ltvv_rate, sat_rate, sbt_rate, prone_12h_rate)
 ```
 
 Proning is excluded from the primary score because its denominator is a *severity-defined cohort*
-roughly two orders of magnitude smaller than the vent-day denominators. At UChicago, 2018-2024:
-682 PROSEVA-eligible patients against ~44,400 SAT-eligible vent-days. At equal weight, proning
-would contribute a quarter of the score while being estimated with ~1/100th the precision,
-dominating the composite's noise rather than its signal. Empirically, the proning floor flags
-**139 of 195** unit-quarter cells, against **8 of 195** for all of `score_core`'s components
-combined. All four metrics are computed and stored regardless; only score membership differs, and
-that is a one-line config edit in `definitions/composite.json`.
+typically orders of magnitude smaller than the vent-day denominators. At equal weight, proning
+would contribute a quarter of the score while being estimated with far less precision, dominating
+the composite's noise rather than its signal. All four metrics are computed and stored regardless;
+only score membership differs, and that is a one-line config edit in
+`definitions/composite.json`. Check the per-metric denominators your site produces (stage 3 prints
+them) before reading `score_full`.
 
 ---
 
@@ -87,9 +86,10 @@ CLIF **spec version 2.1**. The cohort and all four metrics are built from the ta
 
 > **`location_name` is optional in CLIF 2.1** and is free text with no permissible-value list, so it
 > is site-specific and may be absent entirely. Stage 0 checks for it and fails with a clear message
-> rather than silently falling back. At UChicago it is populated on 100% of ICU rows and resolves to
-> 7 units — two of which (`N09S`, `N09N`) share `location_type = medical_icu` and would have been
-> collapsed had the pipeline keyed on the categorical instead.
+> rather than silently falling back. Stage 0 reports how many ICU rows carry a name and how many
+> distinct units they resolve to, and asserts that each name nests within exactly one
+> `location_type` — two physically distinct ICUs can share a type and would be collapsed by keying
+> on the categorical.
 
 Values are nulled outside clifpy's `outlier_config.yaml` ranges before any metric is computed, and
 `fio2_set` is rescaled by 1/100 when its whole-table mean exceeds 1 — both exactly as upstream.
@@ -120,8 +120,8 @@ hours, ventilated days, and patients.
   the one the patient enters the day in. The pick is tie-free and order-invariant.
 
 - Records falling in **no named ICU stay** are reported and then excluded — real care, but not care
-  any ICU can be scored for. At UChicago that is 10.7% of IMV hours and 16.3% of vent-days, which
-  sit on the ward (~44%), in procedural areas (~16-25%) and in the ED (~23-34%).
+  any ICU can be scored for. Stage 2 reports the share excluded and breaks it down by
+  `location_category`, separating ward / procedural / ED time from records with no ADT coverage.
 
 Output formats: Parquet for row-level working files, **CSV + Parquet** for the shareable panel.
 
@@ -236,10 +236,9 @@ Stage 1 resolves its input in three tiers and reports which it used:
 Only stage 0 resolves the source; it records the result and later stages reuse it, so a cold build
 runs **once** per invocation rather than once per stage.
 
-**Verified at UChicago.** A cached run and a `--rebuild` run produce **identical panels** at both
-grains — 7 cells x 27 columns and 195 cells x 28 columns, checked by `code/06_compare_tiers.py`. Measured cost: 12m27s cached vs 17m19s
-cold, of which the upstream build (encounter stitching + the clifpy waterfall over 4,034,216
-respiratory_support rows) is 5m15s and writes 1.1 GB.
+`code/06_compare_tiers.py` checks that a cached run and a `--rebuild` run produce identical
+panels at both grains. Per-stage wall clock is appended to `output/<site>/run_timings.csv` on
+every run.
 
 ---
 
@@ -316,12 +315,11 @@ tier produced the cohort), `period`, and `generated`.
 - *Cross-run* (stage 5) — the same comparison against the dashboard's **persisted**
   `episodes.parquet` and `proning.parquet` from a separate build, plus attribution conservation.
 
-At UChicago both pass: 13/13 checks, **zero episodes differing** on any of `ltvv_num/den`,
-`sat_num/den`, `sbt_num/den`, `vent_days`, proning cohort size, or `p12`.
+Results of the cross-run check are written to `final_no_phi/verification.json`, one row per
+property, with the count of episodes differing on each.
 
-See [`docs/METHODS.md`](docs/METHODS.md) for the full definitions, the deviations from upstream,
-and the known caveats (notably: at UChicago SAT is effectively a *phenotype* measure, since only
-254 `sat_delivery_pass_fail` rows exist in seven years).
+See [`docs/METHODS.md`](docs/METHODS.md) for the full definitions, the deviation from upstream,
+and the known caveats.
 
 ---
 

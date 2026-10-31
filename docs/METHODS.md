@@ -1,12 +1,15 @@
 # Methods — ventilator QI composite score
 
-Companion to [`../README.md`](../README.md). Covers what each metric means, the one place this
-pipeline deviates from upstream, how the composite and the per-patient exposure are formed, and the
-caveats a reader should know before using the score.
+Companion to [`../README.md`](../README.md). What each metric means, the one place this pipeline
+deviates from upstream, how the composite and the per-patient exposure are formed, and the caveats
+a reader should know before using the score.
+
+This document carries no results. Every number the pipeline produces is written to
+`output/<site>/final_no_phi/`, with its provenance block.
 
 Definitions are those of [`AartikSarma/clif-dashboards`](https://github.com/AartikSarma/clif-dashboards)
-at commit `f55c379`, read from `definitions/respiratory.yaml` (a verbatim copy, hash-pinned in
-`definitions/SOURCE`). Upstream code paths are cited as `src/clif_dash/...`.
+at the commit pinned in `definitions/SOURCE`, read from `definitions/respiratory.yaml` (a verbatim,
+hash-checked copy). Upstream code paths are cited as `src/clif_dash/...`.
 
 ---
 
@@ -17,19 +20,15 @@ at commit `f55c379`, read from `definitions/respiratory.yaml` (a verbatim copy, 
 | Encounter linking | Hospitalizations < 6 h apart become one `encounter_block` | clifpy `stitch_encounters`; `platform.yaml` `stitch_hours` |
 | Adults | `age_at_admission >= 18` | `platform.yaml` `age_min` |
 | Ventilator timeline | clifpy respiratory-support waterfall: hourly scaffold at `HH:59:59`, device/mode repair, forward-fill within mode blocks | `respiratory.yaml` `imv_source` |
-| IMV run | Contiguous rows with `device_category = imv` | `upstream/prep.py:163` `imv_runs` |
+| IMV run | Contiguous rows with `device_category = imv` | `upstream/prep.py` `imv_runs` |
 | IMV episode | New episode after >= 24 h off invasive ventilation | `respiratory.yaml` `episode_gap_hours` |
 | ICU requirement | Episode must overlap an ADT stay with `location_category = icu` | `respiratory.yaml` `require_icu` |
-| Outside intubation | Excluded when first ADT location is not the ED **and** first recorded device is IMV **and** `episode_seq == 1` | `respiratory.yaml` `exclude_outside_intubation` |
-| Outliers | Out-of-range values nulled per clifpy `outlier_config.yaml`; `fio2_set` divided by 100 when its whole-table mean > 1 | `upstream/clif_io.py:125` |
+| Outside intubation | Excluded when the first ADT location is not the ED **and** the first recorded device is IMV **and** it is the encounter's first episode | `respiratory.yaml` `exclude_outside_intubation` |
+| Outliers | Out-of-range values nulled per clifpy `outlier_config.yaml`; `fio2_set` divided by 100 when its whole-table mean > 1 | `upstream/clif_io.py` |
 
-At UChicago this yields **16,228** IMV episodes across **13,495** encounter blocks, **12,969** of
-them first episodes, spanning 2018-Q1 to 2024-Q4.
-<!-- src: output/uchicago/intermediate_phi/cohort/manifest.json → counts; cross-checked against clif-dashboards/output/uchicago/respiratory/summary.json funnel "IMV episodes analysed" = 16228 and proning_funnel step 1 = 12969 -->
-
-Time attribution follows upstream: a record's period is derived from its own timestamp in
-**site-local** time, and an episode's period from its start. The only change is widening the grain
-from month to quarter (`period` in the site profile).
+Time attribution follows upstream: a record's period comes from its own timestamp in **site-local**
+time, an episode's from its start. The only change is widening the grain from month to quarter
+(`period` in the site profile).
 
 ---
 
@@ -39,14 +38,14 @@ from month to quarter (`period` in the site profile).
 
 - **Denominator:** hourly-scaffold IMV hours inside the episode whose `mode_category` is
   volume-targeted (`assist control-volume control`, `pressure-regulated volume control`, `simv`,
-  `volume support`), with a non-null `tidal_volume_set` **and** a known predicted body weight.
-  An episode with no PBW contributes nothing (`missing_height: exclude`).
-- **Numerator:** those hours with `tidal_volume_set / PBW <= 8` mL/kg (tolerance `1e-9`).
-  Rates at 6 and 7 mL/kg are emitted as `ltvv_rate_at_6` / `ltvv_rate_at_7` for sensitivity but are
-  not part of any score.
+  `volume support`), with a non-null `tidal_volume_set` **and** a known predicted body weight. An
+  episode with no PBW contributes nothing (`missing_height: exclude`).
+- **Numerator:** those hours with `tidal_volume_set / PBW <= 8` mL/kg (tolerance `1e-9`). Rates at
+  6 and 7 mL/kg are emitted as `ltvv_rate_at_6` / `ltvv_rate_at_7` for sensitivity but are not part
+  of any score.
 - **PBW:** ARDSNet — `45.5 (female) or 50.0 (otherwise) + 0.91 x (height_cm - 152.4)`.
 - **Height:** the **first** `vitals` `height_cm` between 120 and 220 cm in the encounter block.
-- **Grain:** one IMV hour. Source: `upstream/metrics.py:189-208`, `pbw` at `:17`.
+- **Grain:** one IMV hour. Source: `upstream/metrics.py`, `pbw()`.
 
 ### 2.2 SAT — spontaneous awakening trial
 
@@ -57,51 +56,47 @@ from month to quarter (`period` in the site profile).
 - **Numerator:** a documented SAT (`patient_assessments.assessment_category =
   sat_delivery_pass_fail`, pass or fail — the value is not inspected) **or** the EHR phenotype: all
   continuous sedatives at zero for >= 30 min while still on IMV, after having been on that day.
-- **Grain:** one eligible vent-day. Source: `upstream/metrics.py:224-279`, phenotype at `:413`.
+- **Grain:** one eligible vent-day. Source: `upstream/metrics.py`, `_sat_phenotype`.
 
 ### 2.3 SBT — spontaneous breathing trial
 
-- **Denominator:** vent-days where at **some** IMV hour that day `fio2_set <= 0.5`,
-  `peep_set <= 8`, no paralytic covers that instant, and the norepinephrine-equivalent dose is
-  `<= 0.2` mcg/kg/min; and the day is not under comfort care. A missing FiO2 or PEEP cannot
-  establish eligibility (`NaN <= x` is false).
+- **Denominator:** vent-days where at **some** IMV hour that day `fio2_set <= 0.5`, `peep_set <= 8`,
+  no paralytic covers that instant, and the norepinephrine-equivalent dose is `<= 0.2` mcg/kg/min;
+  and the day is not under comfort care. A missing FiO2 or PEEP cannot establish eligibility
+  (`NaN <= x` is false).
 - **Numerator:** a documented SBT (`sbt_delivery_pass_fail`) **or** the phenotype: pressure
   support/CPAP with `pressure_support_set <= 8` and `peep_set <= 5`, or `blow by`, sustained
   >= 30 min and beginning that day, judged on real (non-scaffold) rows.
-- **Grain:** one eligible vent-day. Source: `upstream/metrics.py:263-274`, phenotype at `:455`.
+- **Grain:** one eligible vent-day. Source: `upstream/metrics.py`, `_sbt_phenotype`.
 
 ### 2.4 Proning
 
 - **Cohort (the denominator):** first IMV episode of an adult ICU encounter; not intubated at an
   outside hospital; no tracheostomy in the first 24 h; a first qualifying arterial blood gas
   (`P/F < 150` with `PEEP >= 5` and `FiO2 >= 0.6`) within 36 h of IMV start; confirmed either by a
-  second qualifying ABG 12-24 h later or by proning within 24 h of the first; not proned before
-  the first qualifying ABG; and not in a `procedural` location in the preceding 48 h.
+  second qualifying ABG 12-24 h later or by proning within 24 h of the first; not proned before the
+  first qualifying ABG; and not in a `procedural` location in the preceding 48 h.
 - **Enrollment:** the earlier of the second qualifying ABG and the first prone session.
 - **Numerator (`p12`):** first prone session starting <= 12 h after enrollment.
 - **Prone session:** only `position_category = prone`; a session ends at the next documented
   position change, or at the end of the ventilation episode for the last row.
-- **Grain:** one patient-encounter. Source: `upstream/proning.py:52-159`.
-
-At UChicago the cohort is **682** patients with **111** proned within 12 h.
-<!-- src: output/uchicago/final_no_phi/verification.json → checks "proning cohort size" / "proned <= 12 h (p12)", both PASS against clif-dashboards/output/uchicago/respiratory/proning.parquet -->
+- **Grain:** one patient-encounter. Source: `upstream/proning.py`.
 
 ---
 
 ## 3. The one deviation: time-resolved unit attribution
 
 Upstream attributes an entire IMV episode to the ICU where it **started**, labelled by
-`location_type` (`upstream/prep.py:209` `attribute_unit`). For a score used as a model exposure that
-is too coarse in two ways: a transferred patient's whole course is credited to the sending unit, and
-physically distinct units sharing a type collapse together. At UChicago `N09S` and `N09N` are both
-`medical_icu`, so keying on the categorical would merge two separate MICUs.
-<!-- src: output of code/00_probe_units.py, [units] table — 7 distinct ICU location_name values, N09S and N09N both under location_type medical_icu -->
+`location_type` (`upstream/prep.py` `attribute_unit`). For a score used as a model exposure that is
+too coarse in two ways: a transferred patient's whole course is credited to the sending unit, and
+physically distinct units sharing a `location_type` collapse together, so keying on the categorical
+can merge two separate ICUs of the same type.
 
 This pipeline instead credits each record to the ICU that delivered it:
 
 | Metric | Attributed to | Rationale |
 |---|---|---|
-| `ltvv` | ICU covering the hour's **midpoint** (`t - 30 min`) | Scaffold rows are stamped at `HH:59:59` and stand for the hour they end; upstream's own `_in_segments` (`metrics.py:439`) tests the same instant |
+| `ltvv` | ICU covering the hour's **midpoint** (`t - 30 min`) | Scaffold rows are stamped at `HH:59:59` and stand for the hour they end; upstream's own `_in_segments` tests the same instant |
 | `sat` / `sbt` | ICU covering the **earliest IMV scaffold hour** of that calendar day | SAT and SBT are morning, nursing-driven; the unit holding the trial opportunity is the one the patient enters the day in. Tie-free, so order-invariant |
 | `prone_12h` | ICU covering the **enrollment** instant | Enrollment is when the proning decision becomes due |
 
@@ -113,19 +108,12 @@ plus the unattributed remainder equal the cohort total, for all four metrics.
 
 ### Unattributed care
 
-Records falling in no named ICU stay are reported and excluded from the panel. At UChicago:
-
-| Metric | Unattributed | Where it actually was |
-|---|---|---|
-| `ltvv` hours | 10.73% | ward 44%, procedural 25%, ED 23%, no ADT coverage 8% |
-| vent-days | 16.35% | ward 43%, ED 34%, procedural 16%, no ADT coverage 7% |
-| proning | 1.91% | — |
-
-<!-- src: output/uchicago/intermediate_phi/records/manifest.json → unattributed_share and unattributed_placement; conservation confirmed in output/uchicago/final_no_phi/verification.json section [2] -->
-
-This is expected: an episode need only *overlap* an ICU stay, so parts of it occur on the ward, in
-the OR, or in the ED. Only 7-8% of the unattributed records have no ADT coverage at all. Excluding
-them is a deliberate choice — it is real care, but not care any ICU can be scored for.
+Records falling in no named ICU stay are excluded from the panel and reported in
+`records/manifest.json`. This is expected: an episode need only *overlap* an ICU stay, so parts of
+it occur on the ward, in the OR, or in the ED. `unattributed_placement` in that manifest breaks the
+excluded records down by `location_category`, separating care delivered elsewhere from records with
+no ADT coverage at all. Excluding them is deliberate — it is real care, but not care any ICU can be
+scored for.
 
 ---
 
@@ -134,54 +122,45 @@ them is a deliberate choice — it is real care, but not care any ICU can be sco
 **Grain.** The primary exposure is one score per ICU, pooled over every available period
 (`unit_panel.csv`). A unit x period panel is retained for sensitivity (`unit_period_panel.csv`).
 Pooling the window re-divides the SUMMED counts rather than averaging the periodic rates, so a
-near-empty period cannot move the unit score — material here because one unit came online
-mid-window with 11 IMV hours across its first five quarters.
-
-Coarsening also changes what the four-metric score can support: the proning denominator rises from
-a median of 2 PROSEVA-eligible patients per unit-quarter to 11-191 per unit, so `score_full` is
-computable for every unit and for 11,702/11,702 patients, against 153/195 cells and 10,508 patients
-at quarter grain.
-<!-- src: code/03_build_panel.py output, [unit] vs [unit_period] blocks; code/04_exposure_assignment.py output -->
+near-empty period cannot move the unit score — material wherever a unit comes online part-way
+through the window. Coarsening also raises the proning denominator per cell by more than an order
+of magnitude, which is what makes the four-metric score computable at all.
 
 **Pooled rates.** `rate = sum(numerator) / sum(denominator)` over the cell — never a mean of
-per-patient percentages. So a unit-quarter's LTVV rate is hour-weighted and its SAT/SBT rates are
-vent-day-weighted, matching upstream's aggregation (`clif_dash/server/aggregate.py`).
+per-patient percentages. A unit's LTVV rate is hour-weighted and its SAT/SBT rates are
+vent-day-weighted, matching upstream's aggregation.
 
-**Composite.** A weighted mean of pooled rates times 100, with weights normalized within each score.
-A score requires **every** one of its components to have a non-zero denominator in that cell;
-otherwise it is null and counted. Renormalizing over whatever happened to be present would make the
-score mean different things in different cells — unacceptable for a regression exposure.
+**Composite.** A weighted mean of pooled rates times 100, with weights normalized within each
+score. A score requires **every** one of its components to have a non-zero denominator in that
+cell; otherwise it is null and counted. Renormalizing over whatever happened to be present would
+make the score mean different things in different cells — unacceptable for a regression exposure.
 `composite(..., require_all=False)` exists for sensitivity work.
 
 **Thin cells are flagged, never dropped.** Dropping them would bias the panel toward high-volume
 units. `<metric>_low` marks a cell below that metric's floor; `<score>_low` ORs only the floors of
 the metrics that score actually uses. The global `low_denominator` ORs all of them and is therefore
-the *wrong* filter for `score_core` — at UChicago the proning floor alone marks 139 of 195 cells,
-none of which bears on `score_core`.
-<!-- src: output of code/03_build_panel.py — floor prone_12h flagged 139/195; score_core below its own floors 8/195 -->
+the wrong filter for a score that excludes a rare metric, since the rare metric's floor will mark
+most cells.
 
 **No leave-one-out adjustment.** An earlier version subtracted each patient's own numerator and
-denominator from their cell before scoring, to remove the mechanical component of an
-exposure-outcome association. It was dropped once the primary exposure moved to unit grain: with
-22,871-183,392 IMV hours and 1,469-8,905 SAT-eligible vent-days per unit, one patient's own care
-moved their own exposure by a median of 0.000 and at most 1.44 points. The correction was a
-quarter-grain concern and is immaterial here.
-<!-- src: code/04_exposure_assignment.py output before removal, [unit] grain: median |score - LOO| 0.000, p95 0.020, max 1.440 -->
+denominator from their cell, to remove the mechanical component of an exposure-outcome
+association. It was dropped once the primary exposure moved to unit grain: with denominators that
+large, one patient's own care moves their own exposure by a negligible amount. The correction was a
+quarter-grain concern.
 
-**Exposure assignment.** 20.9% of patients contribute to more than one cell, so two artifacts are
+**Exposure assignment.** A patient can contribute to more than one cell, so two artifacts are
 emitted: a long `(patient, cell)` table, and a primary-cell assignment using the cell where the
-patient accrued the most **vent-days** (`sat` denominator — the grain SAT and SBT are measured on).
-<!-- src: output of code/04_exposure_assignment.py — 11,702 patients, 14,991 (patient, cell) rows, 2,451 in >1 cell -->
+patient accrued the most **vent-days** (the `sat` denominator — the grain SAT and SBT are measured
+on).
 
 ---
 
 ## 5. Caveats
 
-1. **SAT at UChicago is effectively a phenotype measure.** Only **254** `sat_delivery_pass_fail`
-   rows exist in the whole dataset, against **3,508** for SBT, so the SAT numerator is driven almost
-   entirely by the sedative-interruption phenotype rather than by documentation.
-   `sat_doc` / `sat_pheno` / `sat_num` are stored separately so this stays visible.
-   <!-- src: clif-dashboards/output/uchicago/respiratory/summary.json → data_quality.sat_documented_rows = 254, data_quality.sbt_documented_rows = 3508 -->
+1. **SAT may be effectively a phenotype measure.** Where `sat_delivery_pass_fail` is sparsely
+   documented, the SAT numerator is driven almost entirely by the sedative-interruption phenotype
+   rather than by documentation. `sat_doc` / `sat_pheno` / `sat_num` are stored separately so the
+   split is visible per site; check it before interpreting the SAT rate.
 2. **PBW defaults unknown sex to male.** Upstream's `pbw()` tests
    `str(sex).lower().startswith("f")`, so `Unknown`, `None` and `nan` all receive the male base of
    50.0 kg. Inherited deliberately for definitional identity; it biases PBW upward and therefore
@@ -189,52 +168,22 @@ patient accrued the most **vent-days** (`sat` denominator — the grain SAT and 
 3. **The SAT phenotype does not detect dose halving.** A >= 50% sedative dose reduction is not
    counted as an SAT (`respiratory.yaml` `sat.phenotype`), so the SAT rate is a lower bound.
 4. **Proning rates are case-mix dependent.** The denominator is a severity-defined cohort, so a
-   cardiac or neuro ICU may have near-zero eligible patients over years. `score_full` should be read
-   as a sensitivity analysis, not as a second primary.
+   cardiac or neuro ICU may have near-zero eligible patients over years. `score_full` should be
+   read as a sensitivity analysis, not as a second primary.
 5. **`location_name` is optional and free text in CLIF 2.1.** It has no permissible-value list and
    may be absent, so this pipeline is not guaranteed to run at an arbitrary site. Stage 0 fails with
    a clear message rather than falling back silently.
-6. **Respiratory SOFA is limited by paired FiO2, not by oxygenation.** The respiratory component
-   is absent for 8.9% of patients, and `sofa2_resp` is missing for exactly the set with no
-   `fio2_at_worst` — the two are identical. SpO2 is NOT the constraint: it is charted a median of
-   17 times per 28-hour window and absent for only 0.9% of patients. (`sofa2`'s `spo2_at_worst`
-   looks 80% missing only because it prefers P/F and populates the S/F branch solely as a
-   fallback; `pf_ratio` and `sf_ratio` are perfectly disjoint and sum to the component's
-   availability.) Both SOFA implementations need an FiO2 *concurrent with* the worst oxygenation
-   measurement, which is a stricter requirement than having an FiO2 somewhere in the window.
-   Cross-checked against an independent implementation
-   (`CLIF-epidemiology-of-CRRT/code/sofa_calculator.py`, commit `ec19204`), which reaches the same
-   conclusion from the other direction: for these patients it finds a usable paired `fio2_set` in
-   only 10% of cases, against 77% for patients `sofa2` can score. This is a property of the data,
-   not a library defect.
-   <!-- src: head-to-head run on a 4,000-patient sample; per-component availability sofa2 vs CRRT: resp 91.4%/64.0%, cv 95.2%/94.5%, liver 73.2%/69.1%, kidney 98.9%/97.5%, hemo 98.3%/97.5%, brain 99.4%/97.1%; total corr 0.75, mean |difference| 2.25 points -->
-
-7. **A benign library warning.** `pandas 2.3.3` with `numpy 2.5.4` (the upstream's pins) emits
+6. **Respiratory SOFA is limited by paired FiO2, not by oxygenation.** `clif_respiratory_support` is
+   event-based, so `fio2_set` appears only on rows where it was charted; many IMV rows carry a null
+   because nothing changed. The analysis dataset therefore computes oxygenation from the waterfall,
+   which forward-fills FiO2 within mode blocks, with an S/F fallback (Rice 2007 equivalents) for the
+   pre-intubation window where no ventilator exists. SpO2 is not the constraint; it is densely
+   charted throughout.
+7. **A missing SOFA subscore is summed as 0**, i.e. as normal. Per-component and per-unit
+   missingness is reported by stage 7 in `missingness_report.csv` and `missingness_by_unit.csv`;
+   read those before adjusting on SOFA, since unit-differential charting becomes unit-differential
+   measured severity.
+8. **A benign library warning.** `pandas` with `numpy` at the pinned versions emits
    `DeprecationWarning: The 'generic' unit for NumPy timedelta is deprecated` from inside pandas'
    own `Timestamp` arithmetic. The unit at every call site here is explicit and the arithmetic is
    asserted correct in `tests/test_scoring.py`; the warning is filtered narrowly in stage 2.
-
----
-
-## 6. Source map
-
-| Claim | Value | Source |
-|---|---|---|
-| IMV episodes analysed | 16,228 | `intermediate_phi/cohort/manifest.json` `counts.imv_episodes` |
-| Distinct ICU `location_name` | 7 | `code/00_probe_units.py` `[units]` |
-| Panel cells | 195 (7 units x 28 quarters) | `final_no_phi/panel_provenance.json` `cells` |
-| LTVV denominator (attributed) | 893,991 IMV hours | `code/03_build_panel.py` `[contributions]` |
-| LTVV pooled rate (attributed) | 92.47% | `final_no_phi/verification.json` section [3] |
-| SAT denominator (attributed) | 37,694 vent-days | `code/03_build_panel.py` `[contributions]` |
-| SAT pooled rate (attributed) | 47.80% | `final_no_phi/verification.json` section [3] |
-| SBT denominator (attributed) | 61,309 vent-days | `code/03_build_panel.py` `[contributions]` |
-| SBT pooled rate (attributed) | 20.69% | `final_no_phi/verification.json` section [3] |
-| Proning cohort | 682 patients, 111 proned <= 12 h | `final_no_phi/verification.json` section [1] |
-| `score_core`, unit grain (PRIMARY) | 7/7 units, median 54.5, range 49.2-56.7 | `final_no_phi/unit_panel.csv` |
-| `score_full`, unit grain | 7/7 units, median 42.4, range 36.9-48.8 | `final_no_phi/unit_panel.csv` |
-| `score_core` computable, quarter grain | 193/195 cells, median 54.0 | `code/03_build_panel.py` `[unit_period]` |
-| `score_full` computable, quarter grain | 153/195 cells, median 43.1 | `code/03_build_panel.py` `[unit_period]` |
-| Rank agreement core vs full (unit grain) | Spearman 0.68 | computed from `unit_panel.parquet` |
-| Equivalence checks | 13/13 PASS, 0 episodes differing | `final_no_phi/verification.json` |
-| Cached vs cold-build panel | identical, 195 cells x 28 columns | `code/06_compare_tiers.py --compare` |
-| Runtime, cached / cold | 12m27s / 17m19s (build 5m15s, 1.1 GB) | `output/uchicago/run_timings.csv` |

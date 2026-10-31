@@ -3,11 +3,10 @@
   unit_panel.csv          PRIMARY exposure: one score per ICU, pooled over all available time
   unit_period_panel.csv   SECONDARY: the same scores per ICU x calendar period, for sensitivity
 
-Pooling over all available time is what makes the primary exposure stable. It also fixes two
-artifacts that the per-period panel cannot: a unit that came online mid-window (N08S has 11 IMV
-hours across its first five quarters, then thousands) no longer produces a score off three
-patient-days, and the proning denominator rises from a median of 2 patients per unit-quarter to
-11-191 per unit, which is what makes the four-metric score defensible at all.
+Pooling over all available time is what makes the primary exposure stable, and it fixes two
+artifacts the per-period panel cannot: a unit that came online mid-window no longer produces a
+score off a handful of patient-days, and the proning denominator becomes large enough for the
+four-metric score to be computable at all.
 
 Builds the canonical contribution table (one row per metric x unit-period x patient-episode), then
 pools it at each grain. Pooling is sum(num)/sum(den) over the whole cell, so LTVV is hour-weighted

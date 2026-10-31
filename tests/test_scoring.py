@@ -201,8 +201,8 @@ def test_a_metric_with_no_records_degrades_instead_of_raising():
 def test_pooling_the_window_is_not_the_mean_of_period_rates():
     """The unit score re-divides summed counts; it is NOT the average of the quarterly rates.
 
-    This is what stops a near-empty quarter from pulling a unit's score around, which matters at
-    UChicago where one unit came online mid-window with 11 IMV hours across five quarters.
+    This is what stops a near-empty quarter from pulling a unit's score around, which matters
+    wherever a unit comes online part-way through the study window.
     """
     c = contrib([
         # a huge quarter at 90%, and a 1-hour quarter at 0%

@@ -1,8 +1,7 @@
 # 08_outcome_model.R -- unit ventilator-QI score vs in-hospital mortality
 #
 # Input:  output/<site>/intermediate_phi/analysis/analysis_dataset.parquet
-#         (one row per patient; swap in analysis_dataset_extended.parquet for the
-#          SOFA subscores, raw components, n_icus and unit_id)
+# 
 # Output: output/<site>/final_no_phi/08_outcome_model/
 
 library(arrow)
@@ -68,6 +67,7 @@ icc$sd_logodds <- sqrt(icc$between_unit_var)
 icc$or_per_sd_unit <- exp(icc$sd_logodds)
 icc$icc <- icc$between_unit_var / (icc$between_unit_var + pi^2 / 3)
 icc$mor <- exp(sqrt(2 * icc$between_unit_var) * qnorm(0.75))
+
 # What the MOR is worth in SOFA points, the covariate with the clearest scale.
 icc$mor_in_sofa_points <- log(icc$mor) / fixef(m3)["sofa"]
 icc$var_explained_vs_m1 <- 1 - icc$between_unit_var / icc$between_unit_var[1]
@@ -97,17 +97,13 @@ unit_tab <- unit_tab[order(unit_tab$mortality), ]
 write.csv(unit_tab, file.path(out, "unit_summary.csv"), row.names = FALSE)
 
 
-# Per-unit effects (caterpillar). Conditional modes of the random intercept from
-# the ADJUSTED model, so these are unit differences left AFTER age, Charlson and
-# SOFA -- the unadjusted version would just redraw the bar chart. Reported as an
-# odds ratio for SURVIVAL, so above 1 is better than the average unit.
+# Per-unit effects left after adjusting for covariates but not qCLIF
 re  <- ranef(m2, condVar = TRUE)$unit_name
 u   <- re[, 1]
 se  <- sqrt(as.numeric(attr(re, "postVar")))
-# Adjusted predicted in-hospital survival for a STANDARD patient: the fixed
-# part evaluated at the cohort-mean covariate profile, plus each unit's random
-# intercept. Taking colMeans of the model matrix keeps this covariate-agnostic,
-# so it still works when the covariate set in m2 changes.
+
+# Adjusted predicted in-hospital survival for a standard patient using cohort-mean covariate profile
+# plus each unit's random intercept. 
 eta_fixed <- sum(colMeans(model.matrix(m2)) * fixef(m2))
 surv <- function(eta) 1 / (1 + exp(eta))       # P(survive) = 1 - plogis(eta_death)
 
@@ -135,14 +131,10 @@ write.csv(cat_tab, file.path(out, "unit_effects.csv"), row.names = FALSE)
 
 
 # ---- Figure ------------------------------------------------------------------
-# House style: no title, no subtitle -- those belong in captions.md. Type reads
-# near-black, gridlines horizontal only, paper ground.
 
 INK <- "#0b0b0b"; GRIDLINE <- "#e1e0d9"; PAPER <- "#fcfcfb"; DIED <- "#8c2f18"
 
-# Ordered by unadjusted mortality; n under each category, because a raw death
-# count tracks unit VOLUME as much as unit mortality (N04E has the most deaths
-# on the fourth-highest rate).
+# Ordered by unadjusted mortality
 unit_tab$label <- sprintf("%s\nn = %s", unit_tab$unit_name,
                           format(unit_tab$n, big.mark = ",", trim = TRUE))
 unit_tab$label <- factor(unit_tab$label, levels = unit_tab$label)
@@ -165,10 +157,10 @@ p <- ggplot(unit_tab, aes(x = label, y = deaths)) +
 ggsave(file.path(out, "deaths_by_unit.png"), p, width = 7.5, height = 4.5, dpi = 300)
 
 
-# Caterpillar, after Parker 2019 Figure 2: units ordered along the X axis, the
-# estimate and its 95% interval on Y, coloured by whether the unit is
-# distinguishable from the average. Gridlines are horizontal again here, since
-# the estimate is back on the y axis.
+# Caterpillar plot
+
+# ICU units ordered along the X axis, the estimate and its 95% interval on Y
+# Colored by whether the unit is distinguishable from the average. 
 GRP_COLOURS <- c("Below average"       = "#93331a",
                  "Not distinguishable" = "#0b0b0b",
                  "Above average"       = "#35649f")
@@ -221,14 +213,11 @@ writeLines(c(
   "errors, converted to the predicted probability of surviving to discharge for a",
   sprintf("patient at the cohort-mean covariate profile (reference line, the average unit, %.1f%%).",
           SURV_AVG),
-  "The interval reflects uncertainty in the unit effect only; uncertainty in the fixed",
-  "effects is common to every unit and would shift them together. Units are coloured by",
-  "whether the unit is distinguishable from the average unit at the 5% level. Units are",
+  "Units are coloured by whether the unit is distinguishable from the average unit at the 5% level. Units are",
   sprintf("ordered by point estimate; n per unit ranges %s to %s. The intervals are",
           format(min(cat_tab$n), big.mark = ","), format(max(cat_tab$n), big.mark = ",")),
   "comparative (conditional on the estimated between-unit variance), so they address",
-  "whether units differ from the average, not whether the variance itself is well",
-  "estimated — with 7 units the former is reasonably precise and the latter is not."
+  "whether units differ from the average."
 ), file.path(out, "captions.md"))
 
 cat(sprintf("\nWrote %s\n", out))

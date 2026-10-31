@@ -3,8 +3,7 @@
 clif-dashboards attributes a whole IMV episode to the ICU where the episode *started*, labelled by
 `location_type` (`prep.attribute_unit`). For a unit-level score used as a model exposure that is too
 coarse twice over: a transferred patient's entire course is credited to the sending unit, and two
-physically distinct units sharing a type (at UChicago, N09S and N09N are both `medical_icu`) collapse
-into one. This module replaces both:
+physically distinct units sharing a `location_type` collapse into one. This module replaces both:
 
   * **LTVV** — each hourly IMV scaffold row is credited to the ICU covering that hour. Scaffold rows
     are stamped at HH:59:59 and stand for the hour they end, so the hour's MIDPOINT (t - 30 min) is

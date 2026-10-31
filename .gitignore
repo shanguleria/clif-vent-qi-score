@@ -13,6 +13,13 @@ sites/*.json
 # one row per patient-hour and patient-day. Never commit.
 output/
 
+# Source PDFs: copyrighted, and not ours to redistribute. Matches the rule in
+# CLIF-fentanyl-trajectories.
+references/
+
+# macOS
+.DS_Store
+
 # Internal working notes
 .claude/
 
