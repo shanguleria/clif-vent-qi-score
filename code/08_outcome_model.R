@@ -63,7 +63,7 @@ unit_tab <- data.frame(unit_name = unit_tab$unit_name,
                        n = unit_tab$n[, 1], deaths = unit_tab$deaths[, 2])
 unit_tab$mortality <- unit_tab$deaths / unit_tab$n
 unit_tab$qclif <- df$qclif[match(unit_tab$unit_name, df$unit_name)]
-unit_tab <- unit_tab[order(unit_tab$qclif), ]
+unit_tab <- unit_tab[order(unit_tab$mortality), ]
 write.csv(unit_tab, file.path(out, "unit_summary.csv"), row.names = FALSE)
 
 
@@ -73,8 +73,9 @@ write.csv(unit_tab, file.path(out, "unit_summary.csv"), row.names = FALSE)
 
 INK <- "#0b0b0b"; GRIDLINE <- "#e1e0d9"; PAPER <- "#fcfcfb"; DIED <- "#8c2f18"
 
-# Ordered by quality score so any gradient is visible; n under each category,
-# because a raw death count tracks unit VOLUME as much as unit mortality.
+# Ordered by unadjusted mortality; n under each category, because a raw death
+# count tracks unit VOLUME as much as unit mortality (N04E has the most deaths
+# on the fourth-highest rate).
 unit_tab$label <- sprintf("%s\nn = %s", unit_tab$unit_name,
                           format(unit_tab$n, big.mark = ",", trim = TRUE))
 unit_tab$label <- factor(unit_tab$label, levels = unit_tab$label)
@@ -84,7 +85,7 @@ p <- ggplot(unit_tab, aes(x = label, y = deaths)) +
   geom_text(aes(label = sprintf("%.1f%%", 100 * mortality)),
             vjust = -0.5, colour = INK, size = 3.4) +
   scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
-  labs(x = "ICU (ordered by ventilator QI score)",
+  labs(x = "ICU (ordered by unadjusted in-hospital mortality)",
        y = "Patients who died in hospital") +
   theme_minimal(base_size = 12) +
   theme(axis.title = element_text(colour = INK),
@@ -104,9 +105,9 @@ writeLines(c(
           site, format(nrow(df), big.mark = ",")),
   sprintf("IMV hospitalisation per patient; %s deaths, %.1f%% overall). Units are ordered",
           format(sum(df$died), big.mark = ","), 100 * mean(df$died)),
-  "by their composite ventilator quality score (score_core, pooled over all available",
-  "periods). Bars are unadjusted counts and therefore track unit volume as well as",
-  "unit mortality; the denominator is printed under each unit and the unadjusted",
+  "by unadjusted in-hospital mortality. Bars are counts and therefore track unit volume",
+  "as well as unit mortality;",
+  "the denominator is printed under each unit and the unadjusted",
   "mortality above each bar. Death is defined as a discharge category of Expired or",
   "Hospice, or a recorded death within one day of discharge."
 ), file.path(out, "captions.md"))
