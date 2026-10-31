@@ -104,21 +104,33 @@ write.csv(unit_tab, file.path(out, "unit_summary.csv"), row.names = FALSE)
 re  <- ranef(m2, condVar = TRUE)$unit_name
 u   <- re[, 1]
 se  <- sqrt(as.numeric(attr(re, "postVar")))
+# Adjusted predicted in-hospital survival for a STANDARD patient: the fixed
+# part evaluated at the cohort-mean covariate profile, plus each unit's random
+# intercept. Taking colMeans of the model matrix keeps this covariate-agnostic,
+# so it still works when the covariate set in m2 changes.
+eta_fixed <- sum(colMeans(model.matrix(m2)) * fixef(m2))
+surv <- function(eta) 1 / (1 + exp(eta))       # P(survive) = 1 - plogis(eta_death)
+
 cat_tab <- data.frame(
   unit_name = rownames(re),
   logodds_death = u, se = se,
   or_survival    = exp(-u),
-  lo             = exp(-(u + 1.96 * se)),
-  hi             = exp(-(u - 1.96 * se)))
+  or_lo          = exp(-(u + 1.96 * se)),
+  or_hi          = exp(-(u - 1.96 * se)),
+  # higher u is more death, so the upper survival bound comes from u - 1.96 se
+  survival       = 100 * surv(eta_fixed + u),
+  lo             = 100 * surv(eta_fixed + u + 1.96 * se),
+  hi             = 100 * surv(eta_fixed + u - 1.96 * se))
+SURV_AVG <- 100 * surv(eta_fixed)              # the average unit, random effect 0
 cat_tab$n <- unit_tab$n[match(cat_tab$unit_name, unit_tab$unit_name)]
 cat_tab$qclif <- unit_tab$qclif[match(cat_tab$unit_name, unit_tab$unit_name)]
 # Parker 2019 (JAMA 322:1789) Figure 2 classifies each centre against the MEAN
 # centre at p < .05 and colours it low / average / high. Here the reference is
 # the average unit, i.e. a random intercept of 0, so the test is whether the
 # 95% interval excludes OR = 1.
-cat_tab$group <- ifelse(cat_tab$hi < 1, "Below average",
-                 ifelse(cat_tab$lo > 1, "Above average", "Not distinguishable"))
-cat_tab <- cat_tab[order(cat_tab$or_survival), ]
+cat_tab$group <- ifelse(cat_tab$or_hi < 1, "Below average",
+                 ifelse(cat_tab$or_lo > 1, "Above average", "Not distinguishable"))
+cat_tab <- cat_tab[order(cat_tab$survival), ]
 write.csv(cat_tab, file.path(out, "unit_effects.csv"), row.names = FALSE)
 
 
@@ -165,14 +177,14 @@ cat_tab$label <- sprintf("%s\nn = %s", cat_tab$unit_name,
 cat_tab$label <- factor(cat_tab$label, levels = cat_tab$label)
 cat_tab$group <- factor(cat_tab$group, levels = names(GRP_COLOURS))
 
-cp <- ggplot(cat_tab, aes(x = label, y = or_survival, colour = group)) +
-  geom_hline(yintercept = 1, colour = INK, linewidth = 0.4) +
+cp <- ggplot(cat_tab, aes(x = label, y = survival, colour = group)) +
+  geom_hline(yintercept = SURV_AVG, colour = INK, linewidth = 0.4) +
   geom_errorbar(aes(ymin = lo, ymax = hi), width = 0.14, linewidth = 0.6) +
   geom_point(size = 2.8) +
-  scale_y_continuous(trans = "log", breaks = c(0.5, 0.7, 1, 1.4, 2)) +
+  scale_y_continuous(labels = function(x) sprintf("%.0f%%", x)) +
   scale_colour_manual(values = GRP_COLOURS, drop = FALSE, name = NULL) +
   labs(x = NULL,
-       y = "Odds ratio for survival vs the average ICU") +
+       y = "Adjusted in-hospital survival, standard patient") +
   theme_minimal(base_size = 12) +
   theme(legend.position = "bottom",
         legend.background = element_rect(fill = PAPER, colour = INK, linewidth = 0.3),
@@ -206,8 +218,12 @@ writeLines(c(
   "Figure 2. Conditional modes of the ICU random intercept from the adjusted model",
   "(age, Charlson comorbidity index and SOFA), expressed as an odds ratio for survival",
   "relative to the average ICU, with 95% intervals from the conditional standard",
-  "errors. Units are coloured by whether that interval excludes 1, i.e. whether the",
-  "unit is distinguishable from the average unit at the 5% level. Units are",
+  "errors, converted to the predicted probability of surviving to discharge for a",
+  sprintf("patient at the cohort-mean covariate profile (reference line, the average unit, %.1f%%).",
+          SURV_AVG),
+  "The interval reflects uncertainty in the unit effect only; uncertainty in the fixed",
+  "effects is common to every unit and would shift them together. Units are coloured by",
+  "whether the unit is distinguishable from the average unit at the 5% level. Units are",
   sprintf("ordered by point estimate; n per unit ranges %s to %s. The intervals are",
           format(min(cat_tab$n), big.mark = ","), format(max(cat_tab$n), big.mark = ",")),
   "comparative (conditional on the estimated between-unit variance), so they address",
