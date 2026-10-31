@@ -181,6 +181,13 @@ python3.12 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
+R dependencies are pinned with **renv** (`renv.lock`, 38 packages incl. arrow 26.0.0,
+lme4 2.1-0, ggplot2 4.0.3). On a new machine:
+
+```r
+renv::restore()
+```
+
 The compute stack is **pinned exactly** — `clif-dashboards` at a commit, plus `clifpy==2.1.0`,
 `pandas==2.3.3`, `numpy==2.5.4`, `pyarrow==26.0.0`, `duckdb==1.5.6` — because every site must
 compute identical numbers. The `clif-dashboards` pin is a *definitional* pin, not merely a
@@ -266,7 +273,8 @@ manually around a `--rebuild` run:
 ```
 clif-vent-qi-score/
 ├── bundle_config.py            # site profile (+) definitions resolver; reads thresholds from the YAML
-├── requirements.txt            # pinned compute stack
+├── requirements.txt            # pinned Python compute stack
+├── renv.lock                   # pinned R compute stack (renv::restore())
 ├── run_scores.sh / .ps1        # one-command build, per-stage timings
 ├── definitions/                # SHARED, versioned clinical spec (committed)
 │   ├── respiratory.yaml        #   verbatim from clif-dashboards @ pinned SHA

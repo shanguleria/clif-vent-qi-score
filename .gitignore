@@ -15,3 +15,9 @@ output/
 
 # Internal working notes
 .claude/
+
+# renv: the lockfile and activate script are committed; the library is not.
+renv/library/
+renv/local/
+renv/cellar/
+renv/staging/
