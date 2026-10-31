@@ -1,18 +1,12 @@
 """Stage 4 — turn each panel into a per-patient exposure.
 
-Two grains, mirroring stage 3:
+Two grains mirroring stage 3, and two artifacts per grain because a patient ventilated across
+several units has no single unambiguous exposure:
 
-  exposure_unit_*          PRIMARY: each patient assigned their ICU's score, pooled over all time
-  exposure_unit_period_*   SECONDARY: the same against the unit x period panel
+  *_long.parquet     one row per (patient, cell), with the cell score and the patient's own share
+  *_primary.parquet  one row per patient: the cell where they accrued the most ventilated time
 
-and two artifacts per grain, because a patient ventilated across several units has no single
-unambiguous exposure and the modelling step should get to decide:
-
-  *_long.parquet      one row per (patient, cell) they contributed to, with that cell's score and
-                      the patient's own contribution to it
-  *_primary.parquet   one row per patient: the cell where they accrued the most ventilated time
-
-All outputs are patient-level -> intermediate_phi/, never shared.
+All patient-level -> intermediate_phi/.
 
 Run:  .venv/bin/python code/04_exposure_assignment.py [--site uchicago]
 """

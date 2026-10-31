@@ -1,15 +1,11 @@
-"""Stage 6 (verification only) — prove the stage cache is an optimization, not a dependency.
+"""Stage 6 — prove the stage cache is an optimization, not a dependency.
 
-Compares a panel built from a validated stage cache against one built cold from raw CLIF. They must
-be identical: the cache holds nothing the cold build does not recompute.
+Compares a panel built from a validated cache against one built cold from raw CLIF; they must be
+identical at both grains.
 
-Usage:
-    .venv/bin/python code/06_compare_tiers.py --snapshot          # before a --rebuild run
+    code/06_compare_tiers.py --snapshot      # before a --rebuild run
     ./run_scores.sh --site <site> --rebuild
-    .venv/bin/python code/06_compare_tiers.py --compare           # after it
-
-Both grains (unit and unit x period) are compared. The snapshot lands in
-output/<site>/tier_comparison/ (aggregate panels only, no PHI).
+    code/06_compare_tiers.py --compare       # after it
 """
 from __future__ import annotations
 

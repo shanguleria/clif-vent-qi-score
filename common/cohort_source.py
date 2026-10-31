@@ -1,18 +1,12 @@
-"""Resolve where the cohort comes from: a validated stage cache, or a cold upstream build.
-
-A clif-dashboards respiratory build leaves behind a `stage/` folder holding the stitched
-encounters, the ADT table, the IMV episodes/runs and the clifpy respiratory-support waterfall.
-Reusing it skips the expensive re-stitch and re-waterfall. It is strictly an optimization:
+"""Resolve the cohort source: a validated stage cache, or a cold upstream build.
 
   tier 1  stage  — the cache exists, is complete, AND was built under the same decisions
-  tier 2  build  — otherwise, materialize it by invoking the upstream builder in-process
+  tier 2  build  — invoke the upstream builder in-process to make one
   tier 3  fail   — no cache and no readable data path
 
-Tier 2 runs the *same* code that produced the cache, so there is exactly one staging
-implementation. Nothing about the chunked DuckDB staging or the waterfall is reimplemented here.
-
-Validation deliberately checks what the cache actually *did* (the decisions tree embedded in its
-summary.json) rather than a hash of the files we hope it read.
+Tier 2 runs the same code that produced the cache, so there is one staging implementation, not
+two. Validation checks what the cache actually did -- the decisions tree in its summary.json --
+rather than a hash of the files we hope it read.
 """
 from __future__ import annotations
 
@@ -24,10 +18,8 @@ import pandas as pd
 
 import bundle_config as bc
 
-#: Files a complete respiratory stage cache must contain.
 REQUIRED_FILES = ("encounters.parquet", "mapping.parquet", "adt.parquet",
                   "episodes_a.parquet", "runs_a.parquet", "chunks_b.parquet")
-#: Per-chunk tables the metric records need, staged under phase_b/<table>/.
 PHASE_B_TABLES = ("vitals", "labs", "medication_admin_continuous",
                   "patient_assessments", "position", "code_status")
 
@@ -36,28 +28,23 @@ PHASE_B_TABLES = ("vitals", "labs", "medication_admin_continuous",
 class CohortSource:
     tier: str                 # "stage" | "build"
     stage: Path
-    reason: str               # why this tier was chosen, for the log and for provenance
+    reason: str
 
     @property
     def summary_path(self) -> Path:
         return self.stage.parent / "summary.json"
 
     def cfg(self, site: str | None = None):
-        """clif-dashboards SiteConfig whose stage_dir is the stage we actually resolved.
+        """SiteConfig re-pointed at whichever stage resolved.
 
-        `stage_dir` is derived as output_dir/<dashboard>/stage, so pointing output_dir two
-        levels above the stage re-targets the upstream readers at an external cache without
-        copying anything.
+        stage_dir is output_dir/<dashboard>/stage, so setting output_dir two levels above the
+        stage re-targets the upstream readers at an external cache without copying anything.
         """
         from dataclasses import replace
         return replace(bc.upstream_config(site), output_dir=self.stage.parent.parent)
 
     def load_chunk(self, table: str, chunk: int, site: str | None = None) -> pd.DataFrame:
-        """One staged phase-B chunk, read with the upstream's own loader.
-
-        Reusing `stage.load_staged_chunk` keeps source-file ordering and the CLIF-2.1 column
-        conventions identical to what the dashboard's own metric code sees.
-        """
+        """Read via the upstream loader, so row order and column conventions match its own."""
         from clif_dash.stage import load_staged_chunk
         return load_staged_chunk(self.cfg(site), "phase_b", table, chunk)
 
@@ -143,11 +130,10 @@ def _diff_decisions(cached: dict, ours: dict) -> list[str]:
 
 
 def record(src: "CohortSource", path: Path) -> None:
-    """Persist which source stage 0 resolved, so later stages reuse it instead of re-resolving.
+    """Persist what stage 0 resolved.
 
-    Without this, every stage calling `resolve(rebuild=True)` would re-run the whole upstream
-    build — paying the waterfall cost once per stage — and a stage that did NOT get the flag would
-    silently fall back to a different (stale) cache than the one stage 0 just built.
+    Without it, every stage passing rebuild=True re-runs the whole upstream build, and a stage
+    that did not get the flag falls back to a different cache than the one just built.
     """
     path.write_text(json.dumps({"tier": src.tier, "stage": str(src.stage), "reason": src.reason},
                                indent=2))

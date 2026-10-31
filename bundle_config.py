@@ -1,16 +1,13 @@
 """Site profile + shared definitions resolver.
 
-Three layers collapse into one object:
-  * `sites/<site>.json`        — per-site access (data path, timezone, optional stage cache), gitignored
-  * `definitions/*.yaml`       — the clif-dashboards decision files, copied verbatim at a pinned SHA
-  * `definitions/composite.json` — which metrics make up which score, and at what weight
+  sites/<site>.json             per-site access (data path, timezone, optional cache), gitignored
+  definitions/*.yaml            the clif-dashboards decision files, verbatim at a pinned SHA
+  definitions/composite.json    which metrics make up which score, at what weight
 
-The decision YAMLs are handed back to clif-dashboards by pointing its `SiteConfig.decisions_dir`
-at our `definitions/` folder, so the upstream builder and our scoring code read the *same* files.
-Nothing in this repo re-types a threshold that lives in those YAMLs.
+`SiteConfig.decisions_dir` is pointed at `definitions/`, so the upstream builder and the scoring
+code read the same files and no threshold is re-typed here.
 
-Site selection: `CLIF_SITE` env var, or an explicit `site=` argument (default "uchicago").
-Reads no CLIF data.
+Site selection: `CLIF_SITE`, or an explicit `site=`. Reads no CLIF data.
 """
 from __future__ import annotations
 
@@ -26,7 +23,6 @@ ROOT = Path(__file__).resolve().parent
 DEFINITIONS = ROOT / "definitions"
 SITES = ROOT / "sites"
 
-#: Dashboard whose decision file carries the four metrics we score.
 UPSTREAM_DASHBOARD = "respiratory"
 
 
@@ -61,21 +57,15 @@ def source_info() -> dict:
     return yaml.safe_load((DEFINITIONS / "SOURCE").read_text())
 
 
-#: Panel grains. "unit" pools every available period into one score per ICU and is the PRIMARY
-#: exposure; "unit_period" keeps the time dimension and is retained for sensitivity analysis.
+# "unit" pools every period into one score per ICU and is the primary exposure.
 GRAINS = ("unit", "unit_period")
 
-#: Grouping columns for each grain.
 GROUP_COLS = {"unit": ("unit_name",), "unit_period": ("unit_name", "period")}
 
 
 def min_denominator(grain: str, site: str | None = None) -> dict[str, float]:
-    """Per-metric denominator floors for one grain.
-
-    Floors are stated per grain because a quarter-calibrated floor can never bind on a denominator
-    pooled over seven years — and a config key that cannot bind is a policy declaration the next
-    reader will trust.
-    """
+    """Floors are per grain: a period-calibrated floor can never bind on a pooled denominator,
+    and a config key that cannot bind is a policy declaration the next reader will trust."""
     if grain not in GRAINS:
         raise ValueError(f"grain must be one of {GRAINS}, got {grain!r}")
     floors = load_profile(site).get("min_denominator") or {}
@@ -88,7 +78,7 @@ def min_denominator(grain: str, site: str | None = None) -> dict[str, float]:
 
 
 def metric_ids() -> list[str]:
-    """Every metric the composite spec declares. Iterate THIS, never a hardcoded list."""
+    """Iterate this, never a hardcoded list."""
     return list(load_composite()["metrics"])
 
 
@@ -113,21 +103,21 @@ def output_root(site: str | None = None) -> Path:
 
 
 def phi_dir(site: str | None = None) -> Path:
-    """Row-level working space. NEVER shared, never read with a display tool."""
+    """Row-level. Never shared."""
     d = output_root(site) / "intermediate_phi"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def share_dir(site: str | None = None) -> Path:
-    """Aggregate-by-construction deliverables. PHI-gated at assembly."""
+    """Aggregate by construction, PHI-gated at assembly."""
     d = output_root(site) / "final_no_phi"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def upstream_build_dir(site: str | None = None) -> Path:
-    """Where a tier-2 (cold) upstream build materializes its own stage cache."""
+    """Where a cold upstream build materializes its stage cache."""
     d = output_root(site) / "upstream_build"
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -141,11 +131,7 @@ def site_yaml_path(site: str | None = None) -> Path:
 
 
 def write_site_yaml(site: str | None = None) -> Path:
-    """Render a clif-dashboards site YAML from our profile.
-
-    `decisions_dir` points at our definitions/ folder, so an upstream build reads exactly the
-    decision files this repo ships — there is no second copy to drift from.
-    """
+    """`decisions_dir` points at definitions/, so a build reads the files this repo ships."""
     site = active_site(site)
     prof = load_profile(site)
     out = {
@@ -179,16 +165,12 @@ def upstream_config(site: str | None = None):
 
 
 def decisions(site: str | None = None) -> dict:
-    """The merged platform+respiratory decisions tree, as the upstream resolves it."""
+    """The merged platform+respiratory decisions tree."""
     return upstream_config(site).decisions()
 
 
 def decision_value(metric: str, decision_id: str, site: str | None = None):
-    """One upstream decision value, e.g. decision_value('ltvv', 'threshold_ml_kg') -> 8.
-
-    Reads the shipped YAML rather than restating the number, so a threshold can only be changed
-    in one place.
-    """
+    """Read a threshold from the shipped YAML rather than restating it."""
     entries = decisions(site)["metrics"][metric]["decisions"]
     for d in entries:
         if d["id"] == decision_id:

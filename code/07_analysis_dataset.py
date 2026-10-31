@@ -1,31 +1,20 @@
 """Stage 7 — assemble the patient-level analysis dataset for the outcome model.
 
-One row per patient, using their FIRST qualifying IMV hospitalization. Eight columns:
+One row per patient, using their FIRST qualifying IMV hospitalisation:
 
-  patient_id      key
-  died            in-hospital death (see below)
-  death_dttm      recorded time of death, ALL-CAUSE — see the caveat below
-  unit_name       the ICU the patient spent the most time in during that hospitalization
-  qclif           that unit's composite ventilator quality score (score_core, unit grain)
-  age             age at admission
-  cci             Charlson comorbidity index total
-  sofa            SOFA over [intubation - 24 h, intubation + 4 h]
+  patient_id  died  death_dttm  unit_name  qclif  age_at_admission  cci  sofa
 
-`died` = `discharge_category` in {Expired, Hospice} OR `death_dttm` <= discharge + 1 day.
-The second clause adds only 8 encounters: CLIF's `death_dttm` is an all-cause date that at this
-site falls a median of 206 days AFTER discharge for patients discharged alive, so it must not be
-used unqualified as an in-hospital outcome. `death_dttm` is still emitted verbatim as its own
-column; it is simply not what defines the outcome.
+`died` is `discharge_category` in {Expired, Hospice} OR `death_dttm` within a day of discharge.
+CLIF's `death_dttm` is an ALL-CAUSE date that often falls long after discharge, so it must not be
+used unqualified as an in-hospital outcome; it is still emitted verbatim as its own column.
 
-The ICU is the one holding the most ADT time in the hospitalization, not the most ventilated time,
-so a patient intubated in the ED or moved between units is attributed to where they were actually
-cared for. SOFA spans 24 h before to 4 h after intubation, so the intubation itself counts toward
-the severity it marks.
+The ICU is the one holding the most ADT time in the hospitalisation, not the most ventilated time,
+so patients intubated in the ED or moved between units are attributed to where they were cared
+for. SOFA spans 24 h before to 4 h after intubation, so the intubation counts toward the severity
+it marks.
 
-Writes (patient-level -> intermediate_phi/, never shared):
-  analysis/analysis_dataset.parquet / .csv     the eight columns
-  analysis/analysis_dataset_extended.parquet   + diagnostics (ids, SOFA components, unit time)
-  analysis/manifest.json
+Writes to intermediate_phi/analysis/: the eight columns, an extended frame with diagnostics, and
+missingness reports per covariate, per SOFA component and per unit.
 
 Run:  .venv/bin/python code/07_analysis_dataset.py [--site uchicago]
 """
@@ -52,24 +41,18 @@ from clif_dash.upstream import clif_io                                 # noqa: E
 
 warnings.filterwarnings("ignore", message=".*generic.*unit for NumPy timedelta.*")
 
-#: discharge_category values that constitute an in-hospital death. Hospice is included as a death
-#: by convention (discharge to hospice is a terminal disposition), which is a modelling choice,
-#: not a fact about the data.
+# Hospice counts as a death by convention -- a modelling choice, not a fact about the data.
 DEATH_CATEGORIES = {"expired", "hospice"}
 
-#: How long after discharge a recorded death_dttm may still count as the same hospitalization.
 DEATH_DTTM_GRACE = pd.Timedelta(days=1)
 
-#: SOFA window, relative to the first intubation of the encounter.
 SOFA_BEFORE = pd.Timedelta(hours=24)
 SOFA_AFTER = pd.Timedelta(hours=4)
 
-#: The score that becomes `qclif`.
 QCLIF_SCORE = "score_core"
 
-#: SOFA subscore -> the raw value(s) that feed it. Used to report WHY a component is absent: a
-#: missing component is summed as 0, i.e. as normal, so a charting gap is indistinguishable from
-#: health in the total unless the inputs are inspected directly.
+# A missing subscore is summed as 0, i.e. as normal, so a charting gap is indistinguishable from
+# health unless the inputs behind it are inspected.
 SOFA_INPUTS = {
     "sofa_cns":    ["gcs_total"],
     "sofa_resp":   ["pf", "sf"],
@@ -81,7 +64,7 @@ SOFA_INPUTS = {
 
 
 def clifpy_config(site) -> Path:
-    """clifpy wants its own config shape; derive it from the site profile, not a second copy."""
+    """clifpy's own config shape, derived from the site profile rather than duplicated."""
     prof = bc.load_profile(site)
     p = bc.upstream_build_dir(site) / "clifpy_config.json"
     p.write_text(json.dumps({"data_directory": prof["data_path"],
@@ -91,7 +74,7 @@ def clifpy_config(site) -> Path:
 
 
 def first_encounter_per_patient(episodes, encounters) -> pd.DataFrame:
-    """Each patient's first qualifying IMV hospitalization, with its first intubation time."""
+    """First qualifying IMV hospitalisation per patient, with its first intubation time."""
     ep = episodes.copy()
     ep["start"] = pd.to_datetime(ep["start"], utc=True)
     ep["encounter_block"] = attr.norm_block(ep["encounter_block"])
@@ -107,11 +90,8 @@ def first_encounter_per_patient(episodes, encounters) -> pd.DataFrame:
 
 
 def dominant_icu(cohort, icu) -> pd.DataFrame:
-    """The ICU holding the most ADT time in each encounter.
-
-    Open stays are clipped to the encounter's discharge: the FAR_FUTURE sentinel that keeps an
-    open stay joinable would otherwise make it win every comparison outright.
-    """
+    """The ICU holding the most ADT time. Open stays are clipped to discharge first -- the
+    FAR_FUTURE sentinel would otherwise win every comparison."""
     disch = cohort.set_index("encounter_block")["discharge_dttm"]
     x = icu.copy()
     x["encounter_block"] = attr.norm_block(x["encounter_block"])
@@ -133,11 +113,7 @@ def dominant_icu(cohort, icu) -> pd.DataFrame:
 
 
 def missingness_report(df, sofa, comp, out, log=print):
-    """Per-covariate and per-SOFA-component missingness, plus the inputs behind each component.
-
-    Written as a table rather than printed only, because the decision this informs (impute,
-    restrict to complete components, or accept) needs the numbers to hand.
-    """
+    """Per-covariate and per-component missingness, plus the inputs behind each component."""
     rows = []
 
     def add(group, var, present, n):
@@ -180,8 +156,7 @@ def missingness_report(df, sofa, comp, out, log=print):
         parts = ", ".join(f"{i} {100 * sofa[i].notna().mean():.0f}%" for i in ins)
         log(f"    {c:<16} {parts}")
 
-    # Does charting completeness differ BY UNIT? If it does, the unit-level exposure is confounded
-    # by documentation quality: a unit that charts less looks less sick and gets under-adjusted.
+    # Unit-differential charting becomes unit-differential measured severity.
     both = df[["unit_name"]].join(sofa[comp])
     by_unit = both.groupby("unit_name")[comp].apply(lambda g: 100 * g.isna().mean()).round(1)
     by_unit["n"] = both.groupby("unit_name").size()

@@ -1,28 +1,14 @@
-"""Stage 3 — roll the metric records up into composite scores, at two grains.
+"""Stage 3 — pool the metric records into composite scores, at two grains.
 
-  unit_panel.csv          PRIMARY exposure: one score per ICU, pooled over all available time
-  unit_period_panel.csv   SECONDARY: the same scores per ICU x calendar period, for sensitivity
+  unit_panel.csv          PRIMARY: one score per ICU, pooled over all available time
+  unit_period_panel.csv   SECONDARY: per ICU x calendar period, for sensitivity
 
-Pooling over all available time is what makes the primary exposure stable, and it fixes two
-artifacts the per-period panel cannot: a unit that came online mid-window no longer produces a
-score off a handful of patient-days, and the proning denominator becomes large enough for the
-four-metric score to be computable at all.
+Pooling the whole window re-divides the SUMMED counts rather than averaging the periodic rates, so
+a thin period cannot pull the unit score around, and the proning denominator per cell becomes
+large enough for the four-metric score to be computable.
 
-Builds the canonical contribution table (one row per metric x unit-period x patient-episode), then
-pools it at each grain. Pooling is sum(num)/sum(den) over the whole cell, so LTVV is hour-weighted
-and SAT/SBT are vent-day-weighted — matching the upstream's aggregation rather than averaging
-per-patient percentages. Pooling the WHOLE window is not the mean of the quarterly rates: it
-re-divides the summed counts, so a thin quarter cannot pull the unit score around.
-
-Writes:
-  intermediate_phi/panel/contributions.parquet   row-level, carries patient_id — NEVER shared
-  final_no_phi/unit_panel.{csv,parquet}          PRIMARY, one row per ICU
-  final_no_phi/unit_period_panel.{csv,parquet}   SECONDARY, one row per ICU x period
-  final_no_phi/*_anonymized.csv                  both, with location_name stripped
-  final_no_phi/panel_provenance.json
-
-Records that fell in no named ICU stay (IMV on the ward, in the OR, or in the ED) are reported and
-then excluded: they are real care, but not care any ICU can be scored for.
+Writes contributions.parquet to intermediate_phi/ (row-level), both panels plus anonymized twins
+and panel_provenance.json to final_no_phi/. Records in no named ICU stay are reported and excluded.
 
 Run:  .venv/bin/python code/03_build_panel.py [--site uchicago]
 """

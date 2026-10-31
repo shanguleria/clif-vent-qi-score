@@ -1,12 +1,10 @@
 """Stage 0 — aggregate-only probe of ICU units and definition integrity.
 
-Answers the questions the panel design depends on, BEFORE anything expensive runs:
-  * does this site's adt table carry `location_name` at all (it is OPTIONAL in CLIF 2.1)?
-  * how many distinct ICU units does it resolve to, and how much volume does each carry?
-  * does each `location_name` nest within exactly one `location_type`?
-  * do the shipped definitions still match the pinned upstream commit?
+Run before anything expensive: does this site's adt carry `location_name` (optional in CLIF 2.1),
+how many units does it resolve to, does each nest within one `location_type`, and do the shipped
+definitions still match the pinned upstream commit?
 
-Prints ONLY aggregate counts. No row-level data and no raw CLIF table reaches stdout.
+Prints only aggregate counts.
 
 Run:  .venv/bin/python code/00_probe_units.py [--site uchicago]
 """

@@ -1,23 +1,16 @@
-"""Stage 2 — emit per-hour, per-vent-day and per-patient metric records, attributed to an ICU.
+"""Stage 2 — emit per-hour, per-vent-day and per-patient records, each attributed to an ICU.
 
-clif-dashboards' `metrics.compute()` encodes all four definitions but collapses them to per-EPISODE
-totals, which cannot be split across units. This stage keeps the definitions and changes only the
+`metrics.compute()` encodes all four definitions but collapses them to per-EPISODE totals, which
+cannot be split across units. This keeps the predicates, imported unchanged, and changes only the
 grain:
 
-  ltvv_hours.parquet    one row per eligible IMV scaffold hour   -> unit covering that hour
-  vent_days.parquet     one row per vent-day, SAT+SBT flags      -> unit the day began in
-  prone_patients.parquet one row per PROSEVA-eligible patient    -> unit at enrollment
+  ltvv_hours.parquet      one eligible IMV scaffold hour   -> unit covering that hour
+  vent_days.parquet       one vent-day, SAT+SBT flags      -> unit the day began in
+  prone_patients.parquet  one PROSEVA-eligible patient     -> unit at enrollment
 
-Every predicate is the upstream's, imported unchanged. For each chunk we ALSO run the upstream
-`metrics.compute()` itself and assert our fine-grain records re-aggregate to its per-episode
-numerators and denominators exactly. That turns "we reproduced the definition" from a claim into an
-in-process assertion, and it costs one extra pass over data already in memory.
-
-The per-chunk context mirrors `respiratory/build.py::phase_b_chunk` so each encounter sees exactly
-the rows the dashboard's own build showed it (same staged chunk, same outlier handling, same
-whole-table FiO2 percent test).
-
-Prints only aggregate counts.
+Per chunk it also runs `metrics.compute()` itself and asserts the fine-grain records re-aggregate
+to its per-episode numerators and denominators, so a definitional drift fails the build rather
+than slipping through. The chunk context mirrors `respiratory/build.py::phase_b_chunk`.
 
 Run:  .venv/bin/python code/02_metric_records.py [--site uchicago] [--chunks 0,1,2]
 """
@@ -45,7 +38,6 @@ from common import cohort_source                                       # noqa: E
 from clif_dash import stage                                            # noqa: E402
 from clif_dash.upstream import clif_io, metrics, prep, proning         # noqa: E402
 
-#: Staged phase-B tables the four measures read. Mirrors respiratory/build.py TABLES.
 TABLES = ("vitals", "labs", "position", "patient_assessments",
           "medication_admin_continuous", "code_status")
 
@@ -53,10 +45,7 @@ _noop = lambda *_a, **_k: None
 
 
 def fio2_recorded_as_percent(cfg) -> bool:
-    """Whole-table FiO2 unit test, as the upstream computes it (build.py::site_statistics).
-
-    Must be a WHOLE-table statistic: deciding per chunk would rescale some chunks and not others.
-    """
+    """Whole-table, as upstream computes it: per chunk would rescale some chunks and not others."""
     con = stage.connect()
     try:
         mean = con.execute(
@@ -67,9 +56,6 @@ def fio2_recorded_as_percent(cfg) -> bool:
     return bool(mean is not None and mean > 1)
 
 
-# --------------------------------------------------------------------------- #
-# Fine-grain emission — same predicates as metrics.compute(), finer output
-# --------------------------------------------------------------------------- #
 def emit_records(episodes, ctx, tables, D, tz):
     """Return (ltvv_hour_rows, vent_day_rows) for one chunk's episodes."""
     dm = D["metrics"]
@@ -95,7 +81,7 @@ def emit_records(episodes, ctx, tables, D, tz):
         blk = e.encounter_block
         E = enc_i.loc[blk]
         g = w_by[blk]
-        # Identical slice to metrics.compute(): IMV rows inside [start, end)
+        # Identical slice to metrics.compute()
         inep = g[(g["recorded_dttm"] >= e.start) & (g["recorded_dttm"] < e.end) & g["is_imv"]]
         iv_b = iv.get(blk)
         pa_b = pa_by.get(blk)
@@ -103,7 +89,7 @@ def emit_records(episodes, ctx, tables, D, tz):
         height = h["height_cm"] if h is not None else np.nan
         p_bw = metrics.pbw(height, E["sex_category"])
 
-        # ---- LTVV: one row per eligible IMV hour --------------------------
+        # LTVV: one row per eligible IMV hour
         hrs = inep[inep["is_scaffold"] & inep["mode_category"].isin(vt_modes)
                    & inep["tidal_volume_set"].notna()]
         if not np.isnan(p_bw) and len(hrs):
@@ -116,7 +102,7 @@ def emit_records(episodes, ctx, tables, D, tz):
                     r[metrics.ltvv_key(t)] = int(ratio[i] <= t + 1e-9)
                 ltvv_rows.append(r)
 
-        # ---- SAT / SBT: one row per vent-day ------------------------------
+        # SAT / SBT: one row per vent-day
         sed_on = prep.on_intervals(iv_b, "sedative")
         par_on = prep.on_intervals(iv_b, "paralytic")
         my_runs = runs_by[blk][runs_by[blk]["episode_id"] == e.episode_id]
@@ -250,8 +236,7 @@ def main() -> int:
     tz, period = prof["timezone"], prof.get("period", "quarter")
 
     print(f"=== 02 metric records: site {site} ===")
-    # Reuse whatever stage 1 resolved. Re-resolving here would re-run the upstream build under
-    # --rebuild, paying the waterfall cost a second time for an identical result.
+    # Reuse what stage 0 resolved; re-resolving would re-run the upstream build.
     src = (cohort_source.recorded(bc.phi_dir(site) / "cohort" / "source.json")
            or cohort_source.resolve(site, rebuild=args.rebuild, require_stage=args.require_stage))
     cfg = src.cfg(site)
@@ -281,7 +266,7 @@ def main() -> int:
     prone = pd.concat(P, ignore_index=True) if P else pd.DataFrame()
     episode_ref = pd.concat(ref, ignore_index=True)
 
-    # ---- attribute every record to the ICU that delivered the care -----------
+    # attribute every record to the ICU that delivered the care
     icu = pd.read_parquet(bc.phi_dir(site) / "cohort" / "icu_intervals.parquet")
 
     ltvv["t"] = attr.hour_midpoints(ltvv["recorded_dttm"])
@@ -306,7 +291,7 @@ def main() -> int:
     episode_ref.to_parquet(out / "episode_reference.parquet", index=False)
 
     def where_unattributed(df, tcol, adt):
-        """Aggregate location_category of records that fell in no named ICU stay."""
+        """Where the excluded records actually were, by location_category."""
         un = df[df["unit_name"] == attr.UNATTRIBUTED]
         if not len(un):
             return {}

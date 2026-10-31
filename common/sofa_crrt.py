@@ -1,21 +1,13 @@
-"""Classic SOFA from the CRRT project's calculator, with a waterfall-based respiratory component.
+"""Classic SOFA from CLIF-epidemiology-of-CRRT, with a waterfall-based respiratory component.
 
-Source: Common-Longitudinal-ICU-data-Format/CLIF-epidemiology-of-CRRT,
-        code/sofa_calculator.py at commit ec19204.
-The file is imported from its checkout rather than vendored, so it cannot drift from the project
-that owns it; `CRRT_CODE_DIR` is where that checkout lives.
+Imported from a checkout rather than vendored so it cannot drift from the project that owns it;
+`CRRT_CODE_DIR` is where that checkout lives.
 
-Two changes on top of what the calculator returns:
-
-  * respiratory  — recomputed from the waterfall FiO2 with a P/F -> S/F fallback (see
-                   common/oxygenation.py), which covers substantially more of the cohort than
-                   raw-table P/F: the waterfall carries FiO2 across event-based gaps, and S/F
-                   covers the pre-intubation window where no ventilator exists.
-  * NEE          — norepinephrine-equivalents filled to 0 where no vasopressor was given. Absent
-                   pressors is a true zero, unlike an absent bilirubin.
-
-`sofa_total` is recomputed from the six subscores so the improved respiratory component is
-reflected in it.
+Two changes on top of what the calculator returns. Respiratory is recomputed from the waterfall
+FiO2 with a P/F -> S/F fallback (common/oxygenation.py), which recovers the event-based charting
+gaps and the pre-intubation window. NEE is filled to 0 where no vasopressor was given -- absent
+pressors is a true zero, unlike an absent bilirubin. `sofa_total` is re-summed so the new
+respiratory subscore reaches it.
 """
 from __future__ import annotations
 
@@ -39,7 +31,6 @@ CRRT_COMMIT = "ec19204"
 
 SUBSCORES = ["sofa_cv_97", "sofa_coag", "sofa_liver", "sofa_resp", "sofa_cns", "sofa_renal"]
 
-#: Raw component values kept as model covariates alongside the subscores.
 COMPONENT_VALUES = ["pf", "sf", "platelet_count", "gcs_total", "bilirubin_total",
                     "creatinine", "inr", "nee", "map"]
 
@@ -60,7 +51,7 @@ def load_calculator():
 
 
 def lab_in_window(src, cfg, category, mapping, windows, agg="max") -> pd.Series:
-    """Extremal value of one lab category inside each encounter's window."""
+    """Extremal value of one lab category inside each window."""
     from clif_dash import stage
     parts = []
     for p in src.waterfall_chunks():
@@ -81,14 +72,14 @@ def lab_in_window(src, cfg, category, mapping, windows, agg="max") -> pd.Series:
     if not parts:
         return pd.DataFrame({"encounter_block": pd.Series(dtype="string"),
                              category: pd.Series(dtype="float64")})
-    # Return a FRAME, not a Series: merging a Series on a column it only has in its index
-    # silently contributes nothing, and the column then disappears from the keep-list filter.
+    # A frame, not a Series: merging a Series on a column it only has in its index silently
+    # contributes nothing and the column vanishes from the keep-list.
     return (pd.concat(parts).groupby("encounter_block")["lab_value_numeric"]
             .agg(agg).rename(category).reset_index())
 
 
 def oxygenation_inputs(src, cfg, mapping, windows):
-    """PaO2 (labs) and SpO2 (vitals) measurements inside each window."""
+    """PaO2 and SpO2 measurements inside each window."""
     from clif_dash import stage
     pao2, spo2 = [], []
     for p in src.waterfall_chunks():
@@ -121,10 +112,7 @@ def oxygenation_inputs(src, cfg, mapping, windows):
 
 
 def compute(src, cfg, mapping, cohort, data_directory, timezone, log=print) -> pd.DataFrame:
-    """Classic SOFA with the improved respiratory component, plus raw component values.
-
-    `cohort` needs [encounter_block, intubation_dttm, start_dttm, end_dttm].
-    """
+    """`cohort` needs [encounter_block, intubation_dttm, start_dttm, end_dttm]."""
     import polars as pl
     sc = load_calculator()
 
@@ -139,7 +127,7 @@ def compute(src, cfg, mapping, cohort, data_directory, timezone, log=print) -> p
         timezone=timezone, fill_na_scores_with_zero=False).to_pandas()
     base["encounter_block"] = attr.norm_block(base["encounter_block"])
 
-    # ---- respiratory, recomputed from the waterfall --------------------------
+    # respiratory, recomputed from the waterfall
     pao2, spo2 = oxygenation_inputs(src, cfg, mapping, windows)
     ox = oxy.compute(src, windows, pao2, spo2)
     log(f"  oxygenation from waterfall FiO2: P/F {ox['pf'].notna().sum():,}, "
@@ -148,7 +136,7 @@ def compute(src, cfg, mapping, cohort, data_directory, timezone, log=print) -> p
     out["sofa_resp_raw"] = out["sofa_resp"]          # keep the calculator's own, for comparison
     out["sofa_resp"] = oxy.resp_subscore(out["pf"], out["sf"], out["oxy_device"])
 
-    # ---- INR, and NEE as a true zero -----------------------------------------
+    # INR, and NEE as a true zero
     inr = lab_in_window(src, cfg, "inr", mapping, windows, "max")
     inr["encounter_block"] = attr.norm_block(inr["encounter_block"])
     out = out.merge(inr, on="encounter_block", how="left")
@@ -158,12 +146,11 @@ def compute(src, cfg, mapping, cohort, data_directory, timezone, log=print) -> p
     for c in pressors:
         if c not in out.columns:
             out[c] = np.nan
-    # Dopamine is converted at 1/100 to a norepinephrine equivalent, as in prep.infusion_intervals.
+    # Dopamine at 1/100, as in prep.infusion_intervals.
     out["nee"] = (out["norepinephrine_mcg_kg_min"].fillna(0)
                   + out["epinephrine_mcg_kg_min"].fillna(0)
                   + out["dopamine_mcg_kg_min"].fillna(0) / 100)
 
-    # ---- recompute the total so it reflects the improved respiratory ---------
     out["sofa_total_raw"] = out["sofa_total"]
     out["sofa_total"] = out[SUBSCORES].fillna(0).sum(axis=1)
     out["sofa_n_components"] = out[SUBSCORES].notna().sum(axis=1)

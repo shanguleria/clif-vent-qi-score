@@ -1,16 +1,11 @@
 """Pooled rates and the equal-weight composite.
 
-Everything is derived from one canonical long table, the *contribution* table:
+Everything derives from one long *contribution* table, one row per (metric, cell, patient):
 
     metric | unit_name | period | encounter_block | patient_id | num | den
 
-One row per (metric, cell, patient-contribution). The panel is its sum, at whichever grain the
-caller groups by; the per-patient contributions are what let stage 4 assign each patient to the
-cell where they accrued the most ventilated time.
-
-Rates are POOLED — `sum(num) / sum(den)` — never a mean of per-patient percentages, matching the
-upstream's aggregation (`clif_dash/server/aggregate.py`). Scores are a weighted mean of pooled
-rates times `scale` (100).
+The panel is its sum at whichever grain the caller groups by; the per-patient rows are what let
+stage 4 assign each patient to the cell where they accrued the most ventilated time.
 """
 from __future__ import annotations
 
@@ -19,22 +14,20 @@ import pandas as pd
 
 CONTRIB_COLUMNS = ["metric", "unit_name", "period", "encounter_block", "patient_id", "num", "den"]
 
-#: A score needs every one of its weighted components to have a non-zero denominator in that cell.
-#: Renormalizing over whatever happens to be present would make the score mean different things in
-#: different cells, which is exactly what a regression exposure must not do. Cells failing this are
-#: null and counted, never silently partial.
+# Renormalizing over whatever components happen to be present would make the score mean different
+# things in different cells, which a regression exposure must not do.
 REQUIRE_ALL_COMPONENTS = True
 
 
 def pooled_rate(num, den):
-    """sum(num)/sum(den) with a zero denominator giving NaN rather than 0 or a divide warning."""
+    """Zero denominator gives NaN, not 0."""
     num = np.asarray(num, dtype="float64")
     den = np.asarray(den, dtype="float64")
     return np.divide(num, den, out=np.full_like(den, np.nan, dtype="float64"), where=den > 0)
 
 
 def cell_totals(contrib: pd.DataFrame, group=("unit_name", "period")) -> pd.DataFrame:
-    """Wide num/den/rate per cell per metric: columns `<metric>_num`, `<metric>_den`, `<metric>_rate`."""
+    """Wide `<metric>_num` / `_den` / `_rate` per cell."""
     group = list(group)
     agg = (contrib.groupby(group + ["metric"], observed=True, dropna=False)[["num", "den"]]
            .sum().reset_index())
@@ -51,11 +44,7 @@ def cell_totals(contrib: pd.DataFrame, group=("unit_name", "period")) -> pd.Data
 
 def composite(frame: pd.DataFrame, weights: dict[str, float], *, scale: float = 100.0,
               require_all: bool = REQUIRE_ALL_COMPONENTS) -> tuple[pd.Series, pd.Series]:
-    """Weighted mean of `<metric>_rate` columns, scaled.
-
-    Returns (score, n_components). `weights` must already be normalized to sum to 1; iterate its
-    keys so a metric added to the config is never silently ignored.
-    """
+    """Weighted mean of `<metric>_rate` columns, scaled. Returns (score, n_components)."""
     missing = [m for m in weights if f"{m}_rate" not in frame.columns]
     if missing:
         raise KeyError(f"composite needs rate columns for {missing}; "
@@ -77,14 +66,10 @@ def composite(frame: pd.DataFrame, weights: dict[str, float], *, scale: float = 
 
 def flag_low_denominator(frame: pd.DataFrame, floors: dict[str, float],
                          scores: dict[str, dict[str, float]] | None = None) -> pd.DataFrame:
-    """Add `<metric>_low` per configured floor, plus a per-score and an overall roll-up.
+    """Flag cells below each floor; never drop them, which would bias toward high-volume units.
 
-    Cells are FLAGGED, never dropped: a thin cell is information, and dropping it would bias the
-    panel toward high-volume units. Iterates the config's own keys.
-
-    `scores` maps score id -> its weight map, giving `<score>_low` flagged only by the floors of
-    the metrics that score actually uses. The global `low_denominator` ORs every floor, so for a
-    score that excludes a rare metric it is the wrong flag to filter on.
+    `<score>_low` uses only the floors of the metrics that score contains. The global
+    `low_denominator` ORs every floor and is the wrong filter for a score excluding a rare metric.
     """
     out = frame.copy()
     flags = []

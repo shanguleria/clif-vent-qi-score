@@ -1,18 +1,10 @@
-"""Stage 1 — resolve the cohort source and materialize the frames the metric records need.
+"""Stage 1 — resolve the cohort source and materialize the frames stage 2 needs.
 
-Reads a validated clif-dashboards stage cache when one is available, otherwise runs the upstream
-respiratory build to create one (see common/cohort_source.py). Either way the cohort is exactly the
-dashboard's: adults on IMV, episodes split at a 24 h gap, ICU overlap required, outside-hospital
-intubations excluded.
+Uses a validated stage cache when available, else runs the upstream respiratory build
+(common/cohort_source.py). Either way the cohort is the dashboard's: adults on IMV, episodes split
+at a 24 h gap, ICU overlap required, outside-hospital intubations excluded.
 
-Writes (all row-level -> intermediate_phi/, never shared):
-  cohort/episodes.parquet        one row per analysed IMV episode, with its period label
-  cohort/runs.parquet            contiguous IMV runs, needed by the SAT/SBT phenotypes
-  cohort/encounters.parquet      encounter-level attributes (patient_id, sex, age, discharge)
-  cohort/icu_intervals.parquet   ICU stays keyed by location_name, for attribution
-  cohort/manifest.json           provenance + which cohort-source tier was used
-
-Prints only aggregate counts.
+Writes to intermediate_phi/cohort/: episodes, runs, encounters, icu_intervals, manifest.
 
 Run:  .venv/bin/python code/01_build_cohort.py [--site uchicago] [--rebuild|--require-stage]
 """

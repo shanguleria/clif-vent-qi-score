@@ -1,19 +1,11 @@
 """Stage 5 — prove the definitions were reproduced, not reinterpreted.
 
-Stage 2 already asserts equivalence inside each chunk against `metrics.compute()` running in the
-same process. This stage is the independent, cross-run check: it compares against the dashboard's
-own PERSISTED output (`episodes.parquet`, `proning.parquet`) from a separate build.
+Stage 2 asserts equivalence in-process; this is the cross-run check against the dashboard's
+PERSISTED output from a separate build. Three properties: the fine-grain records re-aggregate to
+its per-episode numerators and denominators; attribution conserves denominators across cells plus
+the unattributed remainder; and the site-wide pooled rates bracket its headline.
 
-Three properties:
-
-  1. DEFINITIONAL   our per-hour/per-day records, re-aggregated to episode grain, equal the
-                    dashboard's per-episode numerators and denominators exactly.
-  2. CONSERVATION   attribution only redistributes: denominators summed over every unit cell plus
-                    the unattributed remainder equal the cohort total.
-  3. POOLED RATE    the site-wide pooled rate over attributed care, and over everything, bracket
-                    the dashboard's own headline.
-
-Exit code is non-zero if any property fails. Prints only aggregate counts.
+Non-zero exit if any property fails. Writes final_no_phi/verification.json.
 
 Run:  .venv/bin/python code/05_verify_equivalence.py [--site uchicago]
 """
