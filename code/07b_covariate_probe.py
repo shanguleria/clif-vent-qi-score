@@ -72,6 +72,21 @@ def has_column(df, col: str, table: str, log) -> bool:
     return True
 
 
+def unit_hospitals(adt: pd.DataFrame, unit_ids: dict, collapse: dict) -> pd.DataFrame:
+    """Which hospital each ICU sits in, anonymized: hospitals numbered in sorted `hospital_id`
+    order, units by their panel `unit_id`. An ICU name absent from the panel is dropped."""
+    icu = adt[adt["location_category"].astype(str).str.lower().eq("icu")]
+    names = icu["location_name"].astype(str).map(lambda n: collapse.get(n, n))
+    hid = icu["hospital_id"].astype("string").fillna("(missing)")
+    pairs = (pd.DataFrame({"unit_id": names.map(unit_ids).to_numpy(), "hospital_id": hid.to_numpy()})
+             .dropna(subset=["unit_id"]).drop_duplicates())
+    known = sorted(set(pairs["hospital_id"]) - {"(missing)"})
+    labels = {h: f"Hospital {i}" for i, h in enumerate(known, 1)} | {"(missing)": "Hospital missing"}
+    pairs["hospital"] = pairs["hospital_id"].map(labels)
+    return (pairs[["hospital", "unit_id"]].sort_values(["hospital", "unit_id"], kind="stable")
+            .reset_index(drop=True))
+
+
 def cci_components(hd: pd.DataFrame, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.DataFrame:
     """Charlson condition flags per encounter block; a block with no coded diagnosis scores 0,
     as the cci covariate already does in stage 7."""
@@ -130,6 +145,19 @@ def main() -> int:
         cohort[f"procedural_within_{PROCEDURAL_HOURS}h"] = cov.procedural_within(
             cohort, adt, PROCEDURAL_HOURS)
         candidates += ["location_at_intubation", f"procedural_within_{PROCEDURAL_HOURS}h"]
+        if {"location_name", "hospital_id"} <= set(adt.columns):
+            panel = pd.read_parquet(share / "unit_panel.parquet")[["unit_name", "unit_id"]]
+            uh = unit_hospitals(adt, dict(zip(panel["unit_name"], panel["unit_id"])),
+                                bc.load_profile(site).get("unit_collapse") or {})
+            by_h = {h: sorted(g["unit_id"]) for h, g in uh.groupby("hospital")}
+            log(f"\n[hospitals] {len(by_h)} hospital(s) hold {uh['unit_id'].nunique()} ICUs")
+            for h, units in by_h.items():
+                log(f"    {h:<20} {len(units)} ICU(s): {', '.join(units)}")
+            split = sorted(uh.loc[uh["unit_id"].duplicated(keep=False), "unit_id"].unique())
+            log(f"    ICUs recorded under more than one hospital: {split or 'none'}")
+            presence["hospitals"] = by_h
+        else:
+            log("[absent] adt.location_name or adt.hospital_id; hospital structure not reported")
 
     hosp = read_optional(cfg, "hospitalization", log)
     if has_column(hosp, "admission_type_category", "hospitalization", log):
