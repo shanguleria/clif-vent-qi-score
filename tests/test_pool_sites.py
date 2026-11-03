@@ -112,3 +112,14 @@ def test_git_same_code_on_real_history(pool):
 
 def test_panel_paths_are_a_subset_of_row_paths(pool):
     assert set(pool.PANEL_PATHS) <= set(pool.ROW_PATHS)
+
+
+def test_versions_allow_clif_patch_difference(pool):
+    provs = {"Site A": PROV, "Site B": {**PROV, "clif_version": "2.1.1"}}
+    assert pool.check_versions(provs, "rows", pool.ROW_PATHS, same_code=lambda a, b, p: True) == []
+
+
+def test_versions_refuse_clif_minor_difference(pool):
+    provs = {"Site A": PROV, "Site B": {**PROV, "clif_version": "2.2.0"}}
+    problems = pool.check_versions(provs, "rows", pool.ROW_PATHS, same_code=lambda a, b, p: True)
+    assert any("clif_version" in p for p in problems)

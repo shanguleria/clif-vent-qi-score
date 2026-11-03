@@ -266,7 +266,7 @@ cp sites/pooled.example.json sites/pooled.json   # list the members; order sets 
 CLIF_SITE=pooled Rscript code/08_outcome_model.R
 ```
 
-Raw CLIF tables are never merged. Stage 7c refuses to pool sites whose definitions, CLIF version
+Raw CLIF tables are never merged. Stage 7c refuses to pool sites whose definitions, CLIF major.minor version (patch releases may differ)
 or upstream SHA differ, or whose row- and panel-building code differs between the commits they
 ran (`git diff` over the files each one imports: panels compare only what stages 0-4 import, so a
 stage-7 fix means rerunning stage 7, not a cold build; unrelated commits never block). Keys are prefixed with

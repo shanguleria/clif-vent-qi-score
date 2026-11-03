@@ -11,7 +11,8 @@ sites/pooled.json; the letter-to-site key is written to intermediate_phi only. K
 with the letter, so no site's identifiers or name reach the pooled rows.
 
 Refuses to pool when:
-  - definition_version, clif_version or the upstream clif-dashboards SHA differ between sites
+  - definition_version or the upstream clif-dashboards SHA differ between sites, or the CLIF
+    spec differs at major.minor (patch releases may differ; full versions are logged)
   - the code that builds patient rows or panels differs between the commits the sites ran
     (git diff over ROW_PATHS for patient rows and PANEL_PATHS for panels, so commits that touch
     neither do not block)
@@ -105,6 +106,10 @@ def git_same_code(sha_a: str | None, sha_b: str | None, paths: list[str]) -> boo
     return r.returncode == 0
 
 
+def clif_minor(version) -> str | None:
+    return ".".join(str(version).split(".")[:2]) if version else None
+
+
 def check_versions(provs: dict[str, dict], what: str, paths: list[str],
                    same_code=git_same_code) -> list[str]:
     """`provs` maps site -> provenance block. Returns problems; empty means poolable."""
@@ -112,7 +117,10 @@ def check_versions(provs: dict[str, dict], what: str, paths: list[str],
     sites = list(provs)
     for key in MUST_MATCH:
         vals = {s: provs[s].get(key) for s in sites}
-        if len(set(vals.values())) > 1:
+        # CLIF patch releases do not change the schema this pipeline reads (researcher decision,
+        # 2026-11-03), so sites must agree on major.minor only; full versions are still recorded.
+        compared = ({s: clif_minor(v) for s, v in vals.items()} if key == "clif_version" else vals)
+        if len(set(compared.values())) > 1:
             problems.append(f"{what}: {key} differs across sites: {vals}")
     ref = sites[0]
     for s in sites[1:]:
@@ -222,7 +230,8 @@ def main() -> int:
     log("\n[sites]")
     for m in members:
         log(f"    {letters[m]}: {len(rows[m]):,} patients, {panels[m]['unit_name'].nunique()} units, "
-            f"stage-7 code {manifests[m]['provenance'].get('code_version')}")
+            f"stage-7 code {manifests[m]['provenance'].get('code_version')}, "
+            f"CLIF {manifests[m]['provenance'].get('clif_version')}")
     log(f"    pooled: {len(pooled_rows):,} patients, {pooled_panel['unit_name'].nunique()} units")
 
     tabs = [cov.tabulate(pooled_rows, v, by="site") for v in REFERENCE_LEVELS]

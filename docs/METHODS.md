@@ -220,7 +220,8 @@ Raw CLIF tables are never merged: timestamps are localized per site, identifiers
 within a site, and site vocabularies are validated where they arise. The score is an absolute
 weighted mean of each unit's pooled rates, not rescaled within a site, so it is comparable across
 sites under identical definitions — which stage 7c enforces by refusing sites whose definition
-version, CLIF version, upstream SHA or row- and panel-building code differ. A **site fixed
+version, CLIF major.minor version (patch releases may differ and are recorded), upstream SHA or
+row- and panel-building code differ. A **site fixed
 effect** enters every specification, including the original adjustment and each covariate block,
 so the score's coefficient comes from differences between units within a site, and site-wide
 differences in charting or case mix are absorbed by the site term. Units keep a random intercept;
