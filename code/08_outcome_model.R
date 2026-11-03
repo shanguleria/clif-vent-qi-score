@@ -8,6 +8,7 @@
 library(arrow)
 library(lme4)
 library(ggplot2)
+source(file.path("code", "caterpillar.R"))
 
 site <- Sys.getenv("CLIF_SITE", "uchicago")
 out  <- file.path("output", site, "final_no_phi", "08_outcome_model")
@@ -183,6 +184,7 @@ cat_tab$qclif <- unit_tab$qclif[match(cat_tab$unit_name, unit_tab$unit_name)]
 cat_tab$group <- ifelse(cat_tab$or_hi < 1, "Below average",
                  ifelse(cat_tab$or_lo > 1, "Above average", "Not distinguishable"))
 cat_tab <- cat_tab[order(cat_tab$survival), ]
+cat_tab$icu <- icu_label(nrow(cat_tab))
 write.csv(transform(cat_tab, unit_name = disp(unit_name)), file.path(out, "unit_effects.csv"),
           row.names = FALSE)
 
@@ -421,40 +423,7 @@ p <- ggplot(unit_tab, aes(x = label, y = deaths)) +
 ggsave(file.path(out, "deaths_by_unit.png"), p, width = FIG_W, height = 4.5, dpi = 300)
 
 
-# Caterpillar plot
-
-# ICU units ordered along the X axis, the estimate and its 95% interval on Y
-# Colored by whether the unit is distinguishable from the average.
-GRP_COLOURS <- c("Below average"       = "#93331a",
-                 "Not distinguishable" = "#0b0b0b",
-                 "Above average"       = "#35649f")
-cat_tab$label <- sprintf("%s\nn = %s", disp(cat_tab$unit_name),
-                         format(cat_tab$n, big.mark = ",", trim = TRUE))
-cat_tab$label <- factor(cat_tab$label, levels = cat_tab$label)
-cat_tab$group <- factor(cat_tab$group, levels = names(GRP_COLOURS))
-
-cp <- ggplot(cat_tab, aes(x = label, y = survival, colour = group)) +
-  geom_hline(yintercept = SURV_AVG, colour = INK, linewidth = 0.4) +
-  geom_errorbar(aes(ymin = lo, ymax = hi), width = 0.14, linewidth = 0.6) +
-  geom_point(size = 2.8) +
-  scale_y_continuous(labels = function(x) sprintf("%.0f%%", x)) +
-  scale_colour_manual(values = GRP_COLOURS, drop = FALSE, name = NULL) +
-  labs(x = NULL,
-       y = "Adjusted in-hospital survival, standard patient") +
-  theme_minimal(base_size = 12) +
-  theme(legend.position = "bottom",
-        legend.background = element_rect(fill = PAPER, colour = INK, linewidth = 0.3),
-        legend.margin = margin(t = 5, r = 8, b = 5, l = 8),
-        legend.box.margin = margin(t = 4),
-        legend.text = element_text(colour = INK, size = 9),
-        axis.title = element_text(colour = INK),
-        axis.text = element_text(colour = INK),
-        panel.grid.minor = element_blank(),
-        panel.grid.major.x = element_blank(),
-        panel.grid.major.y = element_line(colour = GRIDLINE, linewidth = 0.4),
-        plot.background = element_rect(fill = PAPER, colour = NA))
-
-ggsave(file.path(out, "unit_caterpillar.png"), cp, width = FIG_W, height = 4.5, dpi = 300)
+plot_caterpillar(cat_tab, SURV_AVG, file.path(out, "unit_caterpillar.png"))
 
 
 # Exposure-response: what the model says the score itself buys, as opposed to the
@@ -522,7 +491,8 @@ writeLines(c(
   sprintf("patient at the cohort-mean covariate profile (reference line, the average unit, %.1f%%).",
           SURV_AVG),
   "Units are coloured by whether the unit is distinguishable from the average unit at the 5% level. Units are",
-  sprintf("ordered by point estimate; n per unit ranges %s to %s. The intervals are",
+  "ordered by point estimate and labelled ICU 1 (lowest) onward, with no site or unit name;",
+  sprintf("the icu column of unit_effects.csv is the key. n per unit ranges %s to %s. The intervals are",
           format(min(cat_tab$n), big.mark = ","), format(max(cat_tab$n), big.mark = ",")),
   "comparative (conditional on the estimated between-unit variance), so they address",
   "whether units differ from the average.",

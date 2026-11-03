@@ -22,6 +22,7 @@ references/
 
 # Internal working notes
 .claude/
+docs/pooled_model_summary.md
 
 # renv: the lockfile and activate script are committed; the library is not.
 renv/library/

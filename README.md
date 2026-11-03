@@ -185,8 +185,10 @@ Stage 0 re-diffs `definitions/` against the pinned upstream commit and fails lou
 | `output/<site>/run_timings.csv` | Per-stage wall clock + git SHA | Yes |
 
 Everything under `08_outcome_model/` labels ICUs as `Unit 1..n` except `unit_summary.csv`,
-`unit_effects.csv` and the two per-unit figures, which carry `location_name` for site-internal
-reading. Anonymise those before they go anywhere external.
+`unit_effects.csv` and `deaths_by_unit.png`, which carry `location_name` for site-internal
+reading. Anonymise those before they go anywhere external. `unit_caterpillar.png` labels ICUs
+`ICU 1..n` in plot order with no site or unit name; the `icu` column of `unit_effects.csv` is
+the key.
 
 ---
 
@@ -261,6 +263,9 @@ The outcome model is a separate R step, run after the Python pipeline. It reads 
 ```bash
 Rscript code/08_outcome_model.R
 ```
+
+To redraw only the caterpillar plot from a finished stage 8 (no refit), run
+`Rscript code/caterpillar.R` with the same `CLIF_SITE`.
 
 Tests (synthetic frames only, no CLIF data):
 
@@ -382,7 +387,8 @@ clif-vent-qi-score/
 │   ├── config/                 #   outlier_config.json
 │   └── LICENSE                 #   Apache-2.0
 ├── code/                       # 00..07c Python, each standalone-runnable
-│   └── 08_outcome_model.R      #   the outcome model (R)
+│   ├── 08_outcome_model.R      #   the outcome model (R)
+│   └── caterpillar.R           #   caterpillar plot; sourced by stage 8 or run alone to redraw
 ├── tests/                      # synthetic frames, no CLIF data
 │   ├── test_scoring.py         #   pooled rates, composite, grain, attribution
 │   ├── test_cohort_source.py   #   stage-cache completeness + decision matching
