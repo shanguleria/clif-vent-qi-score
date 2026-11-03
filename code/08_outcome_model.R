@@ -35,6 +35,18 @@ raw_cols <- function(terms) sub("^age_z$", "age_at_admission", terms)
 stopifnot(!anyNA(df[, raw_cols(ADJUST)]))
 for (v in names(REF)) df[[v]] <- relevel(factor(df[[v]]), ref = REF[[v]])
 
+# Pooled data (code/07c_pool_sites.py) carries a `site` column. Site enters every specification as
+# a fixed effect, so the score's coefficient is estimated from differences between units within a
+# site; site-wide differences in charting or case mix go to the site term.
+POOLED <- "site" %in% names(df)
+if (POOLED) {
+  df$site <- relevel(factor(df$site), ref = names(which.max(table(df$site))))
+  ADJUST_BASE <- c(ADJUST_BASE, "site")
+  ADJUST <- c(ADJUST, "site")
+  ADJUST_LABEL <- paste0(ADJUST_LABEL, ", with a fixed effect for site")
+}
+SITE_LABEL <- if (POOLED) sprintf("%d pooled sites", nlevels(df$site)) else site
+
 # score_full and the per-score denominator floors live on the panel, not the analysis dataset.
 # Indexed rather than merged so row order is untouched and the fitted models cannot move.
 panel <- as.data.frame(read_parquet(
@@ -44,6 +56,11 @@ stopifnot(!anyNA(prow))
 # The exposure must BE the panel's score, not a copy that has drifted from it.
 stopifnot(isTRUE(all.equal(df$qclif, panel$score_core[prow])))
 for (v in c("score_full", "score_core_low", "score_full_low")) df[[v]] <- panel[[v]][prow]
+
+# Pooled unit_name is "<letter>::<site's own unit name>"; everything written uses the anonymized
+# unit_id ("Site A · Unit 3") instead.
+disp <- function(u) if (POOLED) panel$unit_id[match(u, panel$unit_name)] else u
+FIG_W <- max(7.5, 0.55 * nrow(panel))
 
 # Rescale for interpretability and convergence
 df$age_z <- as.numeric(scale(df$age_at_admission))
@@ -126,7 +143,8 @@ unit_tab <- data.frame(unit_name = unit_tab$unit_name,
 unit_tab$mortality <- unit_tab$deaths / unit_tab$n
 unit_tab$qclif <- df$qclif[match(unit_tab$unit_name, df$unit_name)]
 unit_tab <- unit_tab[order(unit_tab$mortality), ]
-write.csv(unit_tab, file.path(out, "unit_summary.csv"), row.names = FALSE)
+write.csv(transform(unit_tab, unit_name = disp(unit_name)), file.path(out, "unit_summary.csv"),
+          row.names = FALSE)
 
 
 # Per-unit effects left after adjusting for covariates but not qCLIF
@@ -159,7 +177,8 @@ cat_tab$qclif <- unit_tab$qclif[match(cat_tab$unit_name, unit_tab$unit_name)]
 cat_tab$group <- ifelse(cat_tab$or_hi < 1, "Below average",
                  ifelse(cat_tab$or_lo > 1, "Above average", "Not distinguishable"))
 cat_tab <- cat_tab[order(cat_tab$survival), ]
-write.csv(cat_tab, file.path(out, "unit_effects.csv"), row.names = FALSE)
+write.csv(transform(cat_tab, unit_name = disp(unit_name)), file.path(out, "unit_effects.csv"),
+          row.names = FALSE)
 
 
 # ---- Table 1 -----------------------------------------------------------------
@@ -240,6 +259,7 @@ row_cat <- function(label, x) {
     emit(lv, vapply(idx, function(i) fmt_npct(sum(f[i] == lv), sum(i)), ""), "")
 }
 
+if (POOLED) row_cat("Site", df$site)
 row_cont("Age at admission, years", df$age_at_admission)
 row_cat("Sex", df$sex_category)
 row_cat("Race", df$race_category)
@@ -320,6 +340,9 @@ sens <- rbind(
           df[!is.na(df$n_icus) & df$n_icus == 1, ]),
   fit_one("sofa_minus_liver", "SOFA excluding the liver component",
           df, adjust = swap(ADJUST, "sofa", "sofa_no_liver")))
+if (POOLED) sens <- rbind(sens, do.call(rbind, lapply(levels(df$site), function(s)
+  fit_one(paste0("without_", gsub(" ", "_", tolower(s))), paste("all sites except", s),
+          df[df$site != s, ]))))
 # Stated outright, so a restriction that happens to exclude nobody on this site's data reads as
 # vacuous rather than as applied.
 sens$n_excluded <- sens$n_patients[1] - sens$n_patients
@@ -370,7 +393,7 @@ INK <- "#0b0b0b"; GRIDLINE <- "#e1e0d9"; PAPER <- "#fcfcfb"; DIED <- "#8c2f18"
 BAND <- "#dcdbd4"
 
 # Ordered by unadjusted mortality
-unit_tab$label <- sprintf("%s\nn = %s", unit_tab$unit_name,
+unit_tab$label <- sprintf("%s\nn = %s", disp(unit_tab$unit_name),
                           format(unit_tab$n, big.mark = ",", trim = TRUE))
 unit_tab$label <- factor(unit_tab$label, levels = unit_tab$label)
 
@@ -389,7 +412,7 @@ p <- ggplot(unit_tab, aes(x = label, y = deaths)) +
         panel.grid.major.y = element_line(colour = GRIDLINE, linewidth = 0.4),
         plot.background = element_rect(fill = PAPER, colour = NA))
 
-ggsave(file.path(out, "deaths_by_unit.png"), p, width = 7.5, height = 4.5, dpi = 300)
+ggsave(file.path(out, "deaths_by_unit.png"), p, width = FIG_W, height = 4.5, dpi = 300)
 
 
 # Caterpillar plot
@@ -399,7 +422,7 @@ ggsave(file.path(out, "deaths_by_unit.png"), p, width = 7.5, height = 4.5, dpi =
 GRP_COLOURS <- c("Below average"       = "#93331a",
                  "Not distinguishable" = "#0b0b0b",
                  "Above average"       = "#35649f")
-cat_tab$label <- sprintf("%s\nn = %s", cat_tab$unit_name,
+cat_tab$label <- sprintf("%s\nn = %s", disp(cat_tab$unit_name),
                          format(cat_tab$n, big.mark = ",", trim = TRUE))
 cat_tab$label <- factor(cat_tab$label, levels = cat_tab$label)
 cat_tab$group <- factor(cat_tab$group, levels = names(GRP_COLOURS))
@@ -425,7 +448,7 @@ cp <- ggplot(cat_tab, aes(x = label, y = survival, colour = group)) +
         panel.grid.major.y = element_line(colour = GRIDLINE, linewidth = 0.4),
         plot.background = element_rect(fill = PAPER, colour = NA))
 
-ggsave(file.path(out, "unit_caterpillar.png"), cp, width = 7.5, height = 4.5, dpi = 300)
+ggsave(file.path(out, "unit_caterpillar.png"), cp, width = FIG_W, height = 4.5, dpi = 300)
 
 
 # Exposure-response: what the model says the score itself buys, as opposed to the
@@ -476,7 +499,7 @@ writeLines(c(
   "",
   "**deaths_by_unit.png** — In-hospital deaths by ICU, among adults receiving",
   sprintf("invasive mechanical ventilation at %s (n = %s patients, first qualifying",
-          site, format(nrow(df), big.mark = ",")),
+          SITE_LABEL, format(nrow(df), big.mark = ",")),
   sprintf("IMV hospitalisation per patient; %s deaths, %.1f%% overall). Units are ordered",
           format(sum(df$died), big.mark = ","), 100 * mean(df$died)),
   "by unadjusted in-hospital mortality. Bars are counts and therefore track unit volume",

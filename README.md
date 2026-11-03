@@ -179,6 +179,7 @@ Stage 0 re-diffs `definitions/` against the pinned upstream commit and fails lou
 | `output/<site>/final_no_phi/verification.json` | Equivalence check results | Yes |
 | `output/<site>/final_no_phi/08_outcome_model/` | Model coefficients, ICC/MOR, per-unit effects, covariate blocks, sensitivity analyses, Table 1, three figures and `captions.md` | Site-internal; Table 1 still needs a small-cell pass |
 | `output/<site>/final_no_phi/07b_covariate_probe/` | Coverage and crude mortality of candidate case-mix covariates, overall, by `unit_id` and by intubation year; counts below `small_cell_threshold` (`.clif-prepush.json`) suppressed | Site-internal |
+| `output/pooled/` | Multi-site stack from stage 7c: `intermediate_phi/analysis/` (all patients, never shared), `intermediate_phi/site_key.json` (letter-to-site key, never shared), `final_no_phi/unit_panel.parquet`, `unit_panel_anonymized.csv`, `pooled_provenance.json`, `08_outcome_model/` | `final_no_phi/` site-anonymized |
 | `output/<site>/final_no_phi/logs/` | Per-step logs, aggregate only | Yes |
 | `output/<site>/run_timings.csv` | Per-stage wall clock + git SHA | Yes |
 
@@ -252,6 +253,26 @@ Tests (synthetic frames only, no CLIF data):
 .venv/bin/python -m pytest tests/ -q
 ```
 
+### Pooling several sites
+
+On a machine that holds every member site's data (under a data use agreement), run stages 0-7 for
+each site with its own profile, then stack their patient rows and unit panels and fit the model
+once on the stack:
+
+```bash
+./run_scores.sh --site site_one          # and each other member
+cp sites/pooled.example.json sites/pooled.json   # list the members; order sets Site A, B, ...
+.venv/bin/python code/07c_pool_sites.py
+CLIF_SITE=pooled Rscript code/08_outcome_model.R
+```
+
+Raw CLIF tables are never merged. Stage 7c refuses to pool sites whose definitions, CLIF version
+or upstream SHA differ, or whose row- and panel-building code differs between the commits they
+ran (`git diff` over the build paths, so unrelated commits do not block). Keys are prefixed with
+the site letter and units are labelled `Site A · Unit n`; the letter-to-site key is written to
+`output/pooled/intermediate_phi/site_key.json` only. In pooled mode stage 8 adds a site fixed
+effect to every specification and leave-one-site-out sensitivity rows.
+
 ### The stage cache is an optimization, never a dependency
 
 A `clif-dashboards` respiratory build leaves a `stage/` folder holding the stitched encounters, the
@@ -287,6 +308,7 @@ every run.
 | 5 | `code/05_verify_equivalence.py` | `final_no_phi/verification.json` — cross-run equivalence vs the dashboard's persisted output |
 | 7 | `code/07_analysis_dataset.py` | `analysis/analysis_dataset.{csv,parquet}` — one row per patient for the outcome model, plus `_extended` with demographics, the case-mix covariates, SOFA components and ICU-stay diagnostics |
 | 7b | `code/07b_covariate_probe.py` | `final_no_phi/07b_covariate_probe/covariate_coverage.csv` + `logs/07b_covariate_probe.log` — on demand: coverage of candidate covariates (location at intubation, recent procedural stay, admission type, pre-intubation code status, admission-to-intubation time, Charlson conditions with and without present-on-admission) in the model sample, plus which hospital each ICU sits in (anonymized) |
+| 7c | `code/07c_pool_sites.py` | `output/pooled/` — on demand, multi-site: stacks member sites' stage-7 patient rows and unit panels (site-prefixed keys, anonymized labels) after checking versions, build code, required columns and reference levels; then `CLIF_SITE=pooled Rscript code/08_outcome_model.R` |
 | 6 | `code/06_compare_tiers.py` | `tier_comparison/` — on demand, proves a cold build reproduces the cached-tier panel exactly |
 | 8 | `code/08_outcome_model.R` | `final_no_phi/08_outcome_model/` — the multilevel outcome model (R): coefficients, ICC/MOR, per-unit effects, cumulative covariate blocks, Table 1, sensitivity analyses, three figures. Run after the Python pipeline |
 
@@ -316,7 +338,8 @@ clif-vent-qi-score/
 │   ├── composite.json          #   metric -> weight maps: score_core, score_full
 │   └── SOURCE                  #   upstream SHA + sha256 per file
 ├── sites/                      # per-site access profiles (real ones gitignored)
-│   └── uchicago.example.json
+│   ├── uchicago.example.json
+│   └── pooled.example.json     #   members to stack in stage 7c
 ├── common/
 │   ├── cohort_source.py        # stage-cache validation / cold upstream build / hard fail
 │   ├── attribution.py          # ICU intervals by location_name; hour + day attribution
@@ -328,7 +351,7 @@ clif-vent-qi-score/
 │   ├── code/                   #   sofa_calculator.py, outlier_utils.py
 │   ├── config/                 #   outlier_config.json
 │   └── LICENSE                 #   Apache-2.0
-├── code/                       # 00..07b Python, each standalone-runnable
+├── code/                       # 00..07c Python, each standalone-runnable
 │   └── 08_outcome_model.R      #   the outcome model (R)
 ├── tests/                      # synthetic frames, no CLIF data
 │   ├── test_scoring.py         #   pooled rates, composite, grain, attribution
@@ -336,6 +359,7 @@ clif-vent-qi-score/
 │   ├── test_analysis_dataset.py#   the extended export cannot lose a column silently
 │   ├── test_covariates.py      #   intubation-anchored covariates + suppression
 │   ├── test_covariate_probe.py #   anonymized hospital-to-ICU summary
+│   ├── test_pool_sites.py      #   pooling: prefixing, collisions, version refusal
 │   ├── test_vendor_crrt.py     #   vendored SOFA calculator is byte-identical to its pin
 │   ├── test_sofa_crrt.py       #   P/F time-unit workaround around the vendored calculator
 │   └── test_phi_gate.py        #   the shareable-output identifier gate actually fires

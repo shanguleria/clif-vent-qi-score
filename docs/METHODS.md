@@ -214,6 +214,20 @@ the 95% interval from the fixed-effect covariance alone. ICUs are overlaid at th
 at the adjusted mortality implied by the conditional mode from `m2` — the model that has not seen
 the score — so the points are not fitted to the line they are plotted against.
 
+**Pooled multi-site model.** Each site builds its own patient rows and unit panel (stages 0-7) on
+its own data; `code/07c_pool_sites.py` stacks them, and stage 8 fits the same chain on the stack.
+Raw CLIF tables are never merged: timestamps are localized per site, identifiers are unique only
+within a site, and site vocabularies are validated where they arise. The score is an absolute
+weighted mean of each unit's pooled rates, not rescaled within a site, so it is comparable across
+sites under identical definitions — which stage 7c enforces by refusing sites whose definition
+version, CLIF version, upstream SHA or row- and panel-building code differ. A **site fixed
+effect** enters every specification, including the original adjustment and each covariate block,
+so the score's coefficient comes from differences between units within a site, and site-wide
+differences in charting or case mix are absorbed by the site term. Units keep a random intercept;
+they are uniquely keyed across sites by a site-letter prefix. Sensitivity analyses add one
+leave-one-site-out row per site. A person treated at two sites cannot be linked and is counted
+once per site.
+
 ---
 
 ## 6. Caveats
