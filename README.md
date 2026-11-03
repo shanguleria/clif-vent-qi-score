@@ -173,6 +173,7 @@ Stage 0 re-diffs `definitions/` against the pinned upstream commit and fails lou
 |---|---|---|
 | `output/<site>/intermediate_phi/` | Row-level records, contributions, per-patient exposure, the analysis dataset, unit crosswalk | **Never** |
 | `output/<site>/upstream_build/` | Stage cache written by a cold build (~1 GB) | **Never** |
+| `output/<site>_backup_<timestamp>/` | The previous output, moved aside by `run_scores --fresh`; delete once the new run succeeds | **Never** |
 | `output/<site>/final_no_phi/unit_panel.csv` | **The primary exposure** — one row per ICU | Yes, site-internal |
 | `output/<site>/final_no_phi/unit_period_panel.csv` | Secondary, one row per ICU x period | Yes, site-internal |
 | `output/<site>/final_no_phi/*_anonymized.csv` | Both, with `location_name` stripped (`Unit 1..n` only) | **Yes — use these externally** |
@@ -333,13 +334,15 @@ every run.
 | 5 | `code/05_verify_equivalence.py` | `final_no_phi/verification.json` — cross-run equivalence vs the dashboard's persisted output |
 | 7 | `code/07_analysis_dataset.py` | `analysis/analysis_dataset.{csv,parquet}` — one row per patient for the outcome model, plus `_extended` with demographics, the case-mix covariates, SOFA components and ICU-stay diagnostics |
 | 7b | `code/07b_covariate_probe.py` | `final_no_phi/07b_covariate_probe/covariate_coverage.csv` + `logs/07b_covariate_probe.log` — on demand: coverage of candidate covariates (location at intubation, recent procedural stay, admission type, pre-intubation code status, admission-to-intubation time, Charlson conditions with and without present-on-admission) in the model sample, plus which hospital each ICU sits in (anonymized) |
-| 7c | `code/07c_pool_sites.py` | `output/pooled/` — on demand, multi-site: stacks member sites' stage-7 patient rows and unit panels (site-prefixed keys, anonymized labels) after checking versions, build code, required columns and reference levels; then `CLIF_SITE=pooled Rscript code/08_outcome_model.R` |
+| 7c | `code/07c_pool_sites.py` | `output/pooled/` — on demand, multi-site: stacks member sites' stage-7 patient rows and unit panels (site-prefixed keys, anonymized labels) after checking versions, build code, required columns and reference levels; `./run_pooled.sh` runs it and then `CLIF_SITE=pooled Rscript code/08_outcome_model.R` |
 | 6 | `code/06_compare_tiers.py` | `tier_comparison/` — on demand, proves a cold build reproduces the cached-tier panel exactly |
 | 8 | `code/08_outcome_model.R` | `final_no_phi/08_outcome_model/` — the multilevel outcome model (R): coefficients, ICC/MOR, per-unit effects, cumulative covariate blocks, Table 1, sensitivity analyses, three figures. Run after the Python pipeline |
 
-Stages 0-5 and 7 run on every build via the runner. Stage 7b is a diagnostic, run on demand after
-stage 7 (`.venv/bin/python code/07b_covariate_probe.py --site uchicago`). Stage 6 is a
-verification tool invoked manually around a `--rebuild` run:
+Stages 0-5 and 7 run on every build via the runner (`--from` resumes partway). Stage 7b is a
+diagnostic, run on demand after stage 7 (`./run_scores.sh --site uchicago --probe`, or
+`.venv/bin/python code/07b_covariate_probe.py --site uchicago` alone). Stage 7c pools several
+sites and runs on demand (`./run_pooled.sh`). Stage 6 is a verification tool invoked manually
+around a `--rebuild` run:
 
 ```bash
 .venv/bin/python code/06_compare_tiers.py --site uchicago --snapshot
