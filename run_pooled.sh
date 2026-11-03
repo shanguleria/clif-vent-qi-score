@@ -1,25 +1,40 @@
 #!/usr/bin/env bash
 # Pool member sites (stage 7c) and fit the outcome model on the stack (stage 8, pooled).
 #
-#   ./run_pooled.sh [--members a,b,c] [--pool-only]
+#   ./run_pooled.sh [--members a,b,c] [--cohort a,b] [--pool-only | --model-only]
 #
 # --members a,b,c  write sites/pooled.json with these members (order sets Site A, B, ...);
 #                  without it, the existing sites/pooled.json is used
+# --cohort a,b     stage-8 cohorts to fit, one after another (default: all). Names are the
+#                  COHORTS in code/08_outcome_model.R, e.g. all,early_nonop,early_nonop_hypoxemia
 # --pool-only      stop after stage 7c
+# --model-only     skip stage 7c and refit stage 8 on the existing pooled data
 #
 # Every member must already have run stages 0-7 (./run_scores.sh --site <member>).
 set -euo pipefail
 cd "$(dirname "$0")"
 
 MEMBERS=""
+COHORTS="all"
 POOL_ONLY=0
+MODEL_ONLY=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --members)    MEMBERS="$2"; shift 2 ;;
-    --members=*)  MEMBERS="${1#*=}"; shift ;;
-    --pool-only)  POOL_ONLY=1; shift ;;
+    --members)     MEMBERS="$2"; shift 2 ;;
+    --members=*)   MEMBERS="${1#*=}"; shift ;;
+    --cohort)      COHORTS="$2"; shift 2 ;;
+    --cohort=*)    COHORTS="${1#*=}"; shift ;;
+    --pool-only)   POOL_ONLY=1; shift ;;
+    --model-only)  MODEL_ONLY=1; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
+done
+if [[ "$POOL_ONLY" -eq 1 && "$MODEL_ONLY" -eq 1 ]]; then
+  echo "--pool-only and --model-only cannot be combined" >&2; exit 2
+fi
+IFS=',' read -r -a COHORT_LIST <<< "$COHORTS"
+for c in "${COHORT_LIST[@]}"; do
+  if [[ ! "$c" =~ ^[A-Za-z0-9_]+$ ]]; then echo "bad cohort name in --cohort: '$c'" >&2; exit 2; fi
 done
 
 PY=".venv/bin/python"
@@ -39,8 +54,12 @@ if [[ -n "$MEMBERS" ]]; then
   items="$(printf '"%s", ' "${M[@]}")"
   printf '{\n  "members": [%s]\n}\n' "${items%, }" > "$PROFILE"
   echo "wrote $PROFILE: ${M[*]} (Site A = ${M[0]})"
-elif [[ ! -f "$PROFILE" ]]; then
+elif [[ ! -f "$PROFILE" && "$MODEL_ONLY" -eq 0 ]]; then
   echo "No $PROFILE. Pass the members, e.g.: ./run_pooled.sh --members site_one,site_two,site_three" >&2
+  exit 1
+fi
+if [[ "$MODEL_ONLY" -eq 1 && ! -f output/pooled/final_no_phi/unit_panel.parquet ]]; then
+  echo "No pooled data to refit (output/pooled/final_no_phi/unit_panel.parquet); run without --model-only" >&2
   exit 1
 fi
 
@@ -60,20 +79,27 @@ fi
 fmt(){ printf '%dh%02dm%02ds' $((${1}/3600)) $(((${1}%3600)/60)) $((${1}%60)); }
 T0=$SECONDS
 
-echo ""; echo "========== 07c_pool_sites =========="
-"$PY" code/07c_pool_sites.py || {
-  echo ">>> 07c refused or failed; nothing was written. Its log: ./show_results.sh --site pooled" >&2
-  exit 1
-}
+if [[ "$MODEL_ONLY" -eq 0 ]]; then
+  echo ""; echo "========== 07c_pool_sites =========="
+  "$PY" code/07c_pool_sites.py || {
+    echo ">>> 07c refused or failed; nothing was written. Its log: ./show_results.sh --site pooled" >&2
+    exit 1
+  }
+fi
 
 if [[ "$POOL_ONLY" -eq 1 ]]; then
   echo ""; echo "=== pooled in $(fmt $((SECONDS - T0))) — log: ./show_results.sh --site pooled ==="
   exit 0
 fi
 
-echo ""; echo "========== 08_outcome_model (pooled) =========="
-CLIF_SITE=pooled Rscript code/08_outcome_model.R || { echo ">>> stage 8 failed" >&2; exit 1; }
+for c in "${COHORT_LIST[@]}"; do
+  echo ""; echo "========== 08_outcome_model (pooled, cohort $c) =========="
+  CLIF_SITE=pooled CLIF_COHORT="$c" Rscript code/08_outcome_model.R || {
+    echo ">>> stage 8 failed for cohort $c" >&2; exit 1; }
+done
 
 echo ""
-echo "=== done in $(fmt $((SECONDS - T0))) — results: output/pooled/final_no_phi/08_outcome_model/ ==="
-echo "    summaries to share: ./show_results.sh --site pooled"
+echo "=== done in $(fmt $((SECONDS - T0))) — cohorts: ${COHORT_LIST[*]} ==="
+for c in "${COHORT_LIST[@]}"; do
+  echo "    summaries to share: ./show_results.sh --site pooled --cohort $c"
+done

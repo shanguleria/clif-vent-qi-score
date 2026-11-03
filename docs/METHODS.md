@@ -217,6 +217,24 @@ the 95% interval from the fixed-effect covariance alone. ICUs are overlaid at th
 at the adjusted mortality implied by the conditional mode from `m2` — the model that has not seen
 the score — so the points are not fitted to the line they are plotted against.
 
+**Restricted cohorts.** `CLIF_COHORT` selects the outcome cohort; each writes to its own
+`08_outcome_model_<cohort>/` and the full cohort (`all`) is unchanged. Only the outcome cohort is
+restricted: each unit's score still comes from all of its ventilated care, so the question is
+whether a unit's overall ventilator-care quality predicts outcome in the narrower group.
+
+| Cohort | Definition |
+|---|---|
+| `all` | every patient in the model sample |
+| `early_nonop` | first ventilator record in the ED, on the ward (`ward_other`: ward, stepdown, L&D, other) or in the ICU; first IMV within 24 h of admission (`hours_to_intubation` of `<= 0 h` or `0-24 h`); no procedural stay in the 24 h before intubation |
+| `early_nonop_hypoxemia` | `early_nonop` with documented hypoxaemia: worst P/F < 300 or worst S/F < 315 in the SOFA window (24 h before to 4 h after intubation), S/F from SpO2 ≤ 97% only (Rice 2007 equivalents) |
+
+Location is the ADT location at the first ventilator record. For a patient intubated in the OR
+that is usually the ICU they arrive in, which is why `early_nonop` also requires no recent
+procedural stay. A patient with neither a P/F nor an S/F in the window is not classed as
+hypoxaemic; FiO2 is often uncharted before intubation, so most ratios come from around and after
+it. A term that becomes constant within a cohort (`procedural_within_24h` in both restricted
+cohorts) is dropped from every specification and reported in the captions.
+
 **Pooled multi-site model.** Each site builds its own patient rows and unit panel (stages 0-7) on
 its own data; `code/07c_pool_sites.py` stacks them, and stage 8 fits the same chain on the stack.
 Raw CLIF tables are never merged: timestamps are localized per site, identifiers are unique only

@@ -57,7 +57,7 @@ REQUIRED = ["patient_id", "died", "unit_name", "unit_id", "qclif", "age_at_admis
             "procedural_within_24h", "limited_code_status", "admission_type", "n_icus",
             "icu_hours_in_unit", "discharge_category", "sex_category", "race_category",
             "ethnicity_category", "sofa_resp", "sofa_coag", "sofa_liver", "sofa_cv_97",
-            "sofa_cns", "sofa_renal"]
+            "sofa_cns", "sofa_renal", "pf", "sf"]
 # Same list as MODEL_COVARIATES in code/07_analysis_dataset.py; tests/test_pool_sites.py asserts it.
 MODEL_COVARIATES = ["cci_poa", "hours_to_intubation", "location_at_intubation",
                     "procedural_within_24h", "limited_code_status", "admission_type"]

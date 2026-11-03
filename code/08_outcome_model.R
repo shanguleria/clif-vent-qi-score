@@ -3,7 +3,8 @@
 # Input:  output/<site>/intermediate_phi/analysis/analysis_dataset_extended.parquet
 #         output/<site>/final_no_phi/unit_panel.parquet
 #
-# Output: output/<site>/final_no_phi/08_outcome_model/
+# Output: output/<site>/final_no_phi/08_outcome_model/, or 08_outcome_model_<cohort>/ when
+#         CLIF_COHORT names a restricted cohort (see COHORTS)
 
 library(arrow)
 library(lme4)
@@ -11,13 +12,41 @@ library(ggplot2)
 source(file.path("code", "caterpillar.R"))
 
 site <- Sys.getenv("CLIF_SITE", "uchicago")
-out  <- file.path("output", site, "final_no_phi", "08_outcome_model")
+cohort <- Sys.getenv("CLIF_COHORT", "all")
+out <- model_out_dir(site, cohort)
 dir.create(out, recursive = TRUE, showWarnings = FALSE)
 
 df <- as.data.frame(read_parquet(
   file.path("output", site, "intermediate_phi", "analysis",
             "analysis_dataset_extended.parquet")))
 df <- df[complete.cases(df[, c("died", "qclif", "sofa", "cci", "age_at_admission")]), ]
+
+# Restrictions of the outcome cohort. The exposure is untouched: each unit's score still comes
+# from all of its ventilated care. Location is the ADT location at the first ventilator record,
+# which for patients intubated in the OR is usually the ICU they arrive in, so "non-procedural"
+# also needs the procedural-stay flag. Hypoxaemia uses the worst P/F and S/F in the SOFA window
+# (24 h before to 4 h after intubation; S/F only from SpO2 <= 97%), Rice 2007 equivalents.
+EARLY_LOCATIONS <- c("ed", "ward_other", "icu")
+EARLY_HOURS <- c("<= 0 h", "0-24 h")
+early_nonop <- function(d) d$location_at_intubation %in% EARLY_LOCATIONS &
+  d$hours_to_intubation %in% EARLY_HOURS & d$procedural_within_24h == 0
+hypoxaemic <- function(d) (!is.na(d$pf) & d$pf < 300) | (!is.na(d$sf) & d$sf < 315)
+COHORTS <- list(
+  all                   = list(label = "all patients",
+                               keep = function(d) rep(TRUE, nrow(d))),
+  early_nonop           = list(label = paste("first IMV in the ED, ward or ICU within 24 h of",
+                                             "admission, no procedural stay in the prior 24 h"),
+                               keep = early_nonop),
+  early_nonop_hypoxemia = list(label = paste("the early non-procedural cohort with P/F < 300 or",
+                                             "S/F < 315 within 24 h before to 4 h after intubation"),
+                               keep = function(d) early_nonop(d) & hypoxaemic(d)))
+if (!cohort %in% names(COHORTS))
+  stop(sprintf("CLIF_COHORT='%s' is not one of: %s", cohort, paste(names(COHORTS), collapse = ", ")))
+n_before <- nrow(df)
+df <- df[COHORTS[[cohort]]$keep(df), ]
+cat(sprintf("cohort '%s': %d of %d patients\n", cohort, nrow(df), n_before))
+stopifnot(nrow(df) > 0)
+COHORT_LABEL <- COHORTS[[cohort]]$label
 
 # The primary adjustment. ADJUST_BASE is the original specification, kept as a sensitivity row and
 # as the first covariate block; both vectors name model terms, so age enters as age_z.
@@ -56,6 +85,18 @@ if (POOLED) {
   ADJUST_LABEL <- paste0(ADJUST_LABEL, ", with a fixed effect for site")
 }
 SITE_LABEL <- if (POOLED) sprintf("%d pooled sites", nlevels(df$site)) else site
+
+# A restricted cohort can make a term constant (procedural_within_24h is 0 throughout the early
+# non-procedural cohort). It is dropped from every specification and the drop is reported.
+CONSTANT <- Filter(function(v) length(unique(df[[raw_cols(v)]])) < 2, ADJUST)
+if (length(CONSTANT)) {
+  cat(sprintf("constant in cohort '%s', dropped from every model: %s\n",
+              cohort, paste(CONSTANT, collapse = ", ")))
+  ADJUST <- setdiff(ADJUST, CONSTANT)
+  ADJUST_BASE <- setdiff(ADJUST_BASE, CONSTANT)
+  ADJUST_LABEL <- paste0(ADJUST_LABEL, " (", paste(CONSTANT, collapse = ", "),
+                         " constant in this cohort, so omitted)")
+}
 
 # score_full and the per-score denominator floors live on the panel, not the analysis dataset.
 # Indexed rather than merged so row order is untouched and the fitted models cannot move.
@@ -385,6 +426,7 @@ BLOCKS <- list(
                               "location_at_intubation", "procedural_within_24h",
                               "limited_code_status"),
   admission_type          = ADJUST)
+BLOCKS <- lapply(BLOCKS, setdiff, CONSTANT)
 # The first step swaps cci for cci_poa; every later step only adds.
 added <- BLOCKS[-1]
 stopifnot(setequal(BLOCKS[[1]], ADJUST_BASE),
@@ -476,6 +518,9 @@ ggsave(file.path(out, "exposure_response.png"), er, width = 7.5, height = 4.5, d
 
 writeLines(c(
   "# Figure captions",
+  "",
+  sprintf("Cohort for every figure and table here: %s (n = %s patients).", COHORT_LABEL,
+          format(nrow(df), big.mark = ",")),
   "",
   "**deaths_by_unit.png** — In-hospital deaths by ICU, among adults receiving",
   sprintf("invasive mechanical ventilation at %s (n = %s patients, first qualifying",

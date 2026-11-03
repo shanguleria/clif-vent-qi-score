@@ -1,10 +1,17 @@
 # Caterpillar plot of the ICU random intercepts, one row per ICU.
 #
 # Sourced by 08_outcome_model.R. Run on its own to redraw from a finished stage 8 without
-# refitting:  CLIF_SITE=pooled Rscript code/caterpillar.R
-# Reads and writes only output/<site>/final_no_phi/08_outcome_model/.
+# refitting:  CLIF_SITE=pooled Rscript code/caterpillar.R  (add CLIF_COHORT=<name> for a
+# restricted cohort)
+# Reads and writes only output/<site>/final_no_phi/08_outcome_model[_<cohort>]/.
 
 library(ggplot2)
+
+# Stage 8's output folder: 08_outcome_model/ for the full cohort, 08_outcome_model_<cohort>/ for
+# a restricted one (CLIF_COHORT). Defined here so a standalone redraw finds the same folder.
+model_out_dir <- function(site, cohort = "all")
+  file.path("output", site, "final_no_phi",
+            if (cohort == "all") "08_outcome_model" else paste0("08_outcome_model_", cohort))
 
 CAT_INK <- "#0b0b0b"; CAT_GRIDLINE <- "#e1e0d9"; CAT_PAPER <- "#fcfcfb"
 CAT_COLOURS <- c("Below average"       = "#93331a",
@@ -43,7 +50,7 @@ plot_caterpillar <- function(cat_tab, surv_avg, path) {
 }
 
 if (sys.nframe() == 0L) {
-  out <- file.path("output", Sys.getenv("CLIF_SITE", "uchicago"), "final_no_phi", "08_outcome_model")
+  out <- model_out_dir(Sys.getenv("CLIF_SITE", "uchicago"), Sys.getenv("CLIF_COHORT", "all"))
   cat_tab <- read.csv(file.path(out, "unit_effects.csv"))
   cat_tab <- cat_tab[order(cat_tab$survival), ]
   # survival = 100 * plogis(-(eta_fixed + u)), so every row recovers the same eta_fixed.

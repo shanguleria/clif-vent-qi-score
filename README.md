@@ -178,7 +178,7 @@ Stage 0 re-diffs `definitions/` against the pinned upstream commit and fails lou
 | `output/<site>/final_no_phi/unit_period_panel.csv` | Secondary, one row per ICU x period | Yes, site-internal |
 | `output/<site>/final_no_phi/*_anonymized.csv` | Both, with `location_name` stripped (`Unit 1..n` only) | **Yes — use these externally** |
 | `output/<site>/final_no_phi/verification.json` | Equivalence check results | Yes |
-| `output/<site>/final_no_phi/08_outcome_model/` | Model coefficients, ICC/MOR, per-unit effects, covariate blocks, sensitivity analyses, Table 1, three figures and `captions.md` | Site-internal; Table 1 still needs a small-cell pass |
+| `output/<site>/final_no_phi/08_outcome_model/` (`_<cohort>/` for a restricted `CLIF_COHORT`) | Model coefficients, ICC/MOR, per-unit effects, covariate blocks, sensitivity analyses, Table 1, three figures and `captions.md` | Site-internal; Table 1 still needs a small-cell pass |
 | `output/<site>/final_no_phi/07b_covariate_probe/` | Coverage and crude mortality of candidate case-mix covariates, overall, by `unit_id` and by intubation year; counts below `small_cell_threshold` (`.clif-prepush.json`) suppressed | Site-internal |
 | `output/pooled/` | Multi-site stack from stage 7c: `intermediate_phi/analysis/` (all patients, never shared), `intermediate_phi/site_key.json` (letter-to-site key, never shared), `final_no_phi/unit_panel.parquet`, `unit_panel_anonymized.csv`, `pooled_provenance.json`, `08_outcome_model/` | `final_no_phi/` site-anonymized |
 | `output/<site>/final_no_phi/logs/` | Per-step logs, aggregate only | Yes |
@@ -283,18 +283,26 @@ once on the stack:
 ./run_scores.sh --site site_one --probe                     # and each other member
 ./run_pooled.sh --members site_one,site_two,site_three      # order sets Site A, B, ...
 ./show_results.sh --site pooled
+# restricted outcome cohorts, refit on the existing pooled data:
+./run_pooled.sh --model-only --cohort early_nonop,early_nonop_hypoxemia
+./show_results.sh --site pooled --cohort early_nonop
 ```
 
 ```powershell
 .\run_scores.ps1 -Site site_one -Probe
 .\run_pooled.ps1 -Members site_one,site_two,site_three
 .\show_results.ps1 -Site pooled
+.\run_pooled.ps1 -ModelOnly -Cohort early_nonop,early_nonop_hypoxemia
+.\show_results.ps1 -Site pooled -Cohort early_nonop
 ```
 
 `run_pooled` writes `sites/pooled.json` from `--members` (or uses the existing one), checks that
 R and its packages load before the long run, then runs stage 7c and the pooled stage 8;
-`--pool-only` stops after 7c. Run by hand, the steps are `code/07c_pool_sites.py` followed by
-`CLIF_SITE=pooled Rscript code/08_outcome_model.R`.
+`--pool-only` stops after 7c, `--model-only` skips it, and `--cohort` fits one or more of stage
+8's outcome cohorts (`all`, `early_nonop`, `early_nonop_hypoxemia`; definitions in
+`docs/METHODS.md`), each into its own `08_outcome_model_<cohort>/`. Run by hand, the steps are
+`code/07c_pool_sites.py` followed by `CLIF_SITE=pooled CLIF_COHORT=<cohort> Rscript
+code/08_outcome_model.R`.
 
 Raw CLIF tables are never merged. Stage 7c refuses to pool sites whose definitions, CLIF major.minor version (patch releases may differ)
 or upstream SHA differ, or whose row- and panel-building code differs between the commits they
@@ -338,7 +346,7 @@ every run.
 | 4 | `code/04_exposure_assignment.py` | `exposure/exposure_{unit,unit_period}_{long,primary}.parquet` — per-patient exposure |
 | 5 | `code/05_verify_equivalence.py` | `final_no_phi/verification.json` — cross-run equivalence vs the dashboard's persisted output |
 | 7 | `code/07_analysis_dataset.py` | `analysis/analysis_dataset.{csv,parquet}` — one row per patient for the outcome model, plus `_extended` with demographics, the case-mix covariates, SOFA components and ICU-stay diagnostics |
-| 7b | `code/07b_covariate_probe.py` | `final_no_phi/07b_covariate_probe/covariate_coverage.csv` + `logs/07b_covariate_probe.log` — on demand: coverage of candidate covariates (location at intubation, recent procedural stay, admission type, pre-intubation code status, admission-to-intubation time, Charlson conditions with and without present-on-admission) in the model sample, plus which hospital each ICU sits in (anonymized) |
+| 7b | `code/07b_covariate_probe.py` | `final_no_phi/07b_covariate_probe/covariate_coverage.csv` + `logs/07b_covariate_probe.log` — on demand: coverage of candidate covariates (location at intubation, recent procedural stay, admission type, pre-intubation code status, admission-to-intubation time, Charlson conditions with and without present-on-admission, primary-diagnosis coverage and ICD-10 chapter) in the model sample, plus which hospital each ICU sits in (anonymized) |
 | 7c | `code/07c_pool_sites.py` | `output/pooled/` — on demand, multi-site: stacks member sites' stage-7 patient rows and unit panels (site-prefixed keys, anonymized labels) after checking versions, build code, required columns and reference levels; `./run_pooled.sh` runs it and then `CLIF_SITE=pooled Rscript code/08_outcome_model.R` |
 | 6 | `code/06_compare_tiers.py` | `tier_comparison/` — on demand, proves a cold build reproduces the cached-tier panel exactly |
 | 8 | `code/08_outcome_model.R` | `final_no_phi/08_outcome_model/` — the multilevel outcome model (R): coefficients, ICC/MOR, per-unit effects, cumulative covariate blocks, Table 1, sensitivity analyses, three figures. Run after the Python pipeline |
