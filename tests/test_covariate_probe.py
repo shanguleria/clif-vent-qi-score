@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -51,3 +52,27 @@ def test_collapse_map_is_applied_before_lookup():
 def test_missing_hospital_id_is_labelled_not_numbered():
     adt = pd.DataFrame({"location_category": ["icu"], "location_name": ["A"], "hospital_id": [None]})
     assert _probe().unit_hospitals(adt, UNITS, {})["hospital"].tolist() == ["Hospital missing"]
+
+
+def test_primary_diagnosis_counts_and_chapter():
+    hd = pd.DataFrame({
+        "encounter_block":       ["1", "1", "2", "2", "2", "3"],
+        "diagnosis_code":        ["J96.01", "E11.9", "I21.4", "A41.9", "N17.9", "428.0"],
+        "diagnosis_code_format": ["ICD10CM", "ICD10CM", "icd10cm", "ICD10CM", "ICD10CM", "ICD9CM"],
+        "diagnosis_primary":     pd.array([1, 0, 1, 1, None, 1], dtype="Int64")})
+    cohort = pd.DataFrame({"encounter_block": ["1", "2", "3", "4"]})
+    n, chapter, dist = _probe().primary_diagnosis(hd, cohort)
+    assert n.tolist() == ["1", "2+", "1", "0"]
+    # block 2 has two primaries; the lowest code (A41.9) decides
+    assert chapter.tolist() == ["respiratory", "infectious", "not_icd10cm", "none_flagged"]
+    assert dist["1"] == 4 and dist["0"] == 1 and sum(dist.values()) == 6
+
+
+@pytest.mark.parametrize("code, chapter", [
+    ("A41.9", "infectious"), ("J96.01", "respiratory"), ("I21.4", "circulatory"),
+    ("C34.90", "neoplasm"), ("D49.9", "neoplasm"), ("D50.0", "blood_immune"),
+    ("H59.0", "eye"), ("H60.1", "ear"), ("S06.5X0A", "injury_poisoning"),
+    ("T40.2X1A", "injury_poisoning"), ("U07.1", "special_purpose"), ("Z99.11", "health_status_contact"),
+    ("o9a.211", "pregnancy"), ("", "unclassified"), ("123.4", "unclassified"), ("DX1", "unclassified")])
+def test_icd10_chapter(code, chapter):
+    assert _probe().icd10_chapter(code) == chapter

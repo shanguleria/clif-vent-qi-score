@@ -10,6 +10,8 @@ candidate overall, by anonymized unit, and by intubation year, with crude mortal
   hours_admission_to_intubation binned
   cci::<condition>              clifpy Charlson conditions, all coded diagnoses
   cci_poa::<condition>          the same, present-on-admission diagnoses only
+  n_primary_dx                  diagnoses flagged diagnosis_primary per encounter (0, 1, 2+)
+  primary_dx_chapter            ICD-10-CM chapter of the primary diagnosis
 
 A candidate whose table or column is absent is logged as absent, not dropped silently.
 
@@ -27,6 +29,7 @@ import sys
 import warnings
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -85,6 +88,53 @@ def unit_hospitals(adt: pd.DataFrame, unit_ids: dict, collapse: dict) -> pd.Data
     pairs["hospital"] = pairs["hospital_id"].map(labels)
     return (pairs[["hospital", "unit_id"]].sort_values(["hospital", "unit_id"], kind="stable")
             .reset_index(drop=True))
+
+
+# Kept in the probe, not common/covariates.py: stage 7c compares the row-building code, and a
+# helper no patient row uses should not force every site to rerun stage 7.
+_ICD10_BY_LETTER = {
+    "A": "infectious", "B": "infectious", "C": "neoplasm", "E": "endocrine_metabolic",
+    "F": "mental_behavioural", "G": "nervous_system", "I": "circulatory", "J": "respiratory",
+    "K": "digestive", "L": "skin", "M": "musculoskeletal", "N": "genitourinary",
+    "O": "pregnancy", "P": "perinatal", "Q": "congenital", "R": "symptoms_signs",
+    "S": "injury_poisoning", "T": "injury_poisoning", "U": "special_purpose",
+    "V": "external_cause", "W": "external_cause", "X": "external_cause", "Y": "external_cause",
+    "Z": "health_status_contact"}
+
+
+def icd10_chapter(code) -> str:
+    """ICD-10-CM chapter of a code, by its letter; D and H split at D50 and H60."""
+    c = str(code).upper().replace(".", "").strip()
+    if not c or not c[0].isalpha():
+        return "unclassified"
+    if c[0] in "DH":
+        if len(c) < 3 or not c[1:3].isdigit():
+            return "unclassified"
+        n = int(c[1:3])
+        if c[0] == "D":
+            return "neoplasm" if n < 50 else "blood_immune"
+        return "eye" if n < 60 else "ear"
+    return _ICD10_BY_LETTER.get(c[0], "unclassified")
+
+
+def primary_diagnosis(hd: pd.DataFrame, cohort: pd.DataFrame):
+    """Per encounter block: how many diagnoses are flagged primary ("0", "1", "2+"; a stitched
+    block spanning several hospitalizations can legitimately hold more than one), and the ICD-10
+    chapter of the primary one (the lowest code when several are flagged, for determinism).
+    Returns (n_primary, chapter, row-level flag distribution)."""
+    flag = pd.to_numeric(hd["diagnosis_primary"], errors="coerce")
+    dist = {str(k): int(v) for k, v in flag.value_counts(dropna=False).items()}
+    p = hd[flag.eq(1).fillna(False).to_numpy(dtype=bool)].copy()
+    n = cohort["encounter_block"].map(p.groupby("encounter_block").size()).fillna(0).astype(int)
+    n_primary = pd.Series(np.select([n.eq(0), n.eq(1)], ["0", "1"], "2+"), index=cohort.index)
+    fmt = p["diagnosis_code_format"].astype(str).str.lower()
+    p["chapter"] = np.where(fmt.eq("icd10cm"), p["diagnosis_code"].map(icd10_chapter),
+                            "not_icd10cm")
+    first = (p.assign(code=p["diagnosis_code"].astype(str))
+             .sort_values(["encounter_block", "code"], kind="stable")
+             .drop_duplicates("encounter_block").set_index("encounter_block")["chapter"])
+    chapter = cohort["encounter_block"].map(first).fillna("none_flagged")
+    return n_primary, chapter, dist
 
 
 def cci_components(hd: pd.DataFrame, mapping: pd.DataFrame, cohort: pd.DataFrame) -> pd.DataFrame:
@@ -181,6 +231,14 @@ def main() -> int:
         comp = cci_components(hd, mapping, cohort)
         cohort = cohort.join(comp.add_prefix("cci::"))
         candidates += [f"cci::{c}" for c in comp.columns]
+        if "diagnosis_primary" in hd.columns:
+            n_prim, chapter, dist = primary_diagnosis(hd, cohort)
+            log(f"[primary dx] diagnosis_primary values among cohort diagnosis rows: {dist}")
+            cohort["n_primary_dx"], cohort["primary_dx_chapter"] = n_prim, chapter
+            candidates += ["n_primary_dx", "primary_dx_chapter"]
+            presence["diagnosis_primary_distribution"] = dist
+        else:
+            log("[absent] hospital_diagnosis.diagnosis_primary not in table")
         if poa_col is None:
             log(f"[absent] hospital_diagnosis has none of {list(POA_COLUMNS)}")
         else:
