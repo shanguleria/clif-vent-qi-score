@@ -163,7 +163,7 @@ def test_limited_code_status_binary():
     assert cov.limited_code_status(s).tolist() == [1, 1, 0, 0, 1, 0, 1]
 
 
-@pytest.mark.parametrize("unclassified", ["Other", cov.MISSING, "Comfort"])
+@pytest.mark.parametrize("unclassified", [cov.MISSING, "Comfort"])
 def test_limited_code_status_refuses_unclassified(unclassified):
     with pytest.raises(ValueError, match="neither"):
         cov.limited_code_status(pd.Series(["Full", unclassified]))
@@ -185,3 +185,8 @@ def test_admission_type_takes_first_hospitalization_and_fills_unknown():
                          "admission_dttm": [ts(5), ts(0), ts(0)],
                          "admission_type_category": ["ED", "OSH", None]})
     assert cov.admission_type(cohort, hosp).tolist() == ["osh", "unknown", "unknown"]
+
+
+def test_other_code_status_is_not_limited():
+    s = pd.Series(["Other", "other ", "DNAR"])
+    assert cov.limited_code_status(s).tolist() == [0, 0, 1]

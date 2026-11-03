@@ -22,10 +22,11 @@ LOCATION_KEPT = ("ed", "icu", "procedural")
 LOCATION_UNKNOWN = "unknown"
 LOCATION_OTHER = "ward_other"
 
-# mCIDE code_status_category, lowercased. "Other" is deliberately in neither set: whether it
-# limits resuscitation is site-specific, so a site that charts it must decide rather than inherit.
+# mCIDE code_status_category, lowercased. "Other" does not say whether resuscitation is limited,
+# so it is treated as not limited (researcher decision, 2026-11-03). Any category outside both
+# sets still stops stage 7.
 LIMITED_CODE = {"dnr", "dnar", "udnr", "dnr/dni", "dnar/dni", "and"}
-NOT_LIMITED_CODE = {"full", "presume full", NONE_RECORDED.lower()}
+NOT_LIMITED_CODE = {"full", "presume full", "other", NONE_RECORDED.lower()}
 
 
 def attach_block(df: pd.DataFrame, mapping: pd.DataFrame, blocks) -> pd.DataFrame:

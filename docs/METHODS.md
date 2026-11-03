@@ -176,7 +176,7 @@ recomputed as stage 7 describes. The covariates are built in stage 7 (`common/co
 | `hours_to_intubation` | Admission to first intubation: ≤ 0 h, 0–24 h, 24–72 h, 72 h–7 d, > 7 d. ≤ 0 h marks intubation before arrival | 0–24 h |
 | `location_at_intubation` | `adt.location_category` of the row spanning intubation on half-open intervals; `ed`, `icu`, `procedural` kept, no covering row → `unknown`, every other category → `ward_other` | `icu` |
 | `procedural_within_24h` | Any `procedural` ADT stay overlapping the 24 h before intubation — the post-operative case mix | 0 |
-| `limited_code_status` | Last `code_status_category` at or before intubation is a DNR-type order (DNR, DNAR, UDNR, DNR/DNI, DNAR/DNI, AND). Full and no recorded order form one level: recording of any order varies by year and by unit, so separating them would adjust for documentation practice. Orders after intubation are excluded as mediators. A category in neither set (e.g. `Other`) stops stage 7 until classified | 0 |
+| `limited_code_status` | Last `code_status_category` at or before intubation is a DNR-type order (DNR, DNAR, UDNR, DNR/DNI, DNAR/DNI, AND). Full and no recorded order form one level: recording of any order varies by year and by unit, so separating them would adjust for documentation practice. Orders after intubation are excluded as mediators. `Other` is classed as not limited, since it does not state a limitation. Any category in neither set stops stage 7 until classified | 0 |
 | `admission_type` | `admission_type_category` of the encounter's first hospitalization | `ed` |
 
 The covariates were chosen after `code/07b_covariate_probe.py` tabulated each candidate's coverage

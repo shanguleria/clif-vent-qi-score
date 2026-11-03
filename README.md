@@ -91,7 +91,7 @@ CLIF **spec version 2.1**. The cohort and all four metrics are built from the ta
 | `hospital_diagnosis` | `hospitalization_id`, `diagnosis_code`, `diagnosis_code_format` = `icd10cm` (Charlson), **`poa_present`** = 1 (present-on-admission Charlson; required) |
 | `adt` | `location_category` spanning intubation (`ed` / `icu` / `procedural` kept, others pooled); `procedural` in the 24 h before intubation |
 | `hospitalization` | `admission_type_category` |
-| `code_status` | `patient_id`, `start_dttm`, `code_status_category`. Limited = DNR, DNAR, UDNR, DNR/DNI, DNAR/DNI, AND; not limited = Full, Presume Full, none recorded. Any other value (e.g. `Other`) stops stage 7 until it is classified in `common/covariates.py` |
+| `code_status` | `patient_id`, `start_dttm`, `code_status_category`. Limited = DNR, DNAR, UDNR, DNR/DNI, DNAR/DNI, AND; not limited = Full, Presume Full, Other, none recorded. Any other value stops stage 7 until it is classified in `common/covariates.py` |
 
 > **`location_name` is optional in CLIF 2.1** and is free text with no permissible-value list, so it
 > is site-specific and may be absent entirely. Stage 0 checks for it and fails with a clear message
