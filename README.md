@@ -92,6 +92,7 @@ CLIF **spec version 2.1**. The cohort and all four metrics are built from the ta
 | `adt` | `location_category` spanning intubation (`ed` / `icu` / `procedural` kept, others pooled); `procedural` in the 24 h before intubation |
 | `hospitalization` | `admission_type_category` |
 | `code_status` | `patient_id`, `start_dttm`, `code_status_category`; the last order between admission and intubation (earlier admissions ignored). Limited = DNR, DNAR, UDNR, DNR/DNI, DNAR/DNI, AND; not limited = Full, Presume Full, Other, none recorded. Any other value stops stage 7 until it is classified in `common/covariates.py` |
+| `patient_assessments` | `hospitalization_id`, `recorded_dttm`, `assessment_category` = `gcs_total`, `numerical_value`; the worst GCS in the 24 h before intubation (primary physiology). The other physiology terms reuse the SOFA inputs: `labs` `po2_arterial`, `platelet_count`, `bilirubin_total`, `creatinine`; `vitals` `spo2`, `map`; vasopressors as norepinephrine equivalents. A missing `clif_patient_assessments` file stops stage 7 |
 
 > **`location_name` is optional in CLIF 2.1** and is free text with no permissible-value list, so it
 > is site-specific and may be absent entirely. Stage 0 checks for it and fails with a clear message
@@ -178,7 +179,7 @@ Stage 0 re-diffs `definitions/` against the pinned upstream commit and fails lou
 | `output/<site>/final_no_phi/unit_period_panel.csv` | Secondary, one row per ICU x period | Yes, site-internal |
 | `output/<site>/final_no_phi/*_anonymized.csv` | Both, with `location_name` stripped (`Unit 1..n` only) | **Yes — use these externally** |
 | `output/<site>/final_no_phi/verification.json` | Equivalence check results | Yes |
-| `output/<site>/final_no_phi/08_outcome_model/` (`_<cohort>/` for a restricted `CLIF_COHORT`) | Model coefficients, ICC/MOR, per-unit effects, covariate blocks, sensitivity analyses, Table 1, three figures and `captions.md` | Site-internal; Table 1 still needs a small-cell pass |
+| `output/<site>/final_no_phi/08_outcome_model/` (`_<cohort>/` for a restricted `CLIF_COHORT`) | Model coefficients, ICC/MOR (with variance LRT and MOR CI), per-unit effects, covariate blocks, sensitivity analyses, Table 1, three figures and `captions.md` | Site-internal; Table 1 still needs a small-cell pass |
 | `output/<site>/final_no_phi/07b_covariate_probe/` | Coverage and crude mortality of candidate case-mix covariates, overall, by `unit_id` and by intubation year; counts below `small_cell_threshold` (`.clif-prepush.json`) suppressed | Site-internal |
 | `output/pooled/` | Multi-site stack from stage 7c: `intermediate_phi/analysis/` (all patients, never shared), `intermediate_phi/site_key.json` (letter-to-site key, never shared), `final_no_phi/unit_panel.parquet`, `unit_panel_anonymized.csv`, `pooled_provenance.json`, `08_outcome_model/` | `final_no_phi/` site-anonymized |
 | `output/<site>/final_no_phi/logs/` | Per-step logs, aggregate only | Yes |
@@ -345,11 +346,11 @@ every run.
 | 3 | `code/03_build_panel.py` | `panel/contributions.parquet` + `final_no_phi/{unit,unit_period}_panel.{csv,parquet}` at both grains |
 | 4 | `code/04_exposure_assignment.py` | `exposure/exposure_{unit,unit_period}_{long,primary}.parquet` — per-patient exposure |
 | 5 | `code/05_verify_equivalence.py` | `final_no_phi/verification.json` — cross-run equivalence vs the dashboard's persisted output |
-| 7 | `code/07_analysis_dataset.py` | `analysis/analysis_dataset.{csv,parquet}` — one row per patient for the outcome model, plus `_extended` with demographics, the case-mix covariates, SOFA components and ICU-stay diagnostics |
+| 7 | `code/07_analysis_dataset.py` | `analysis/analysis_dataset.{csv,parquet}` — one row per patient for the outcome model, plus `_extended` with demographics, the case-mix covariates, SOFA components, physiology values (incl. pre-intubation GCS) and ICU-stay diagnostics |
 | 7b | `code/07b_covariate_probe.py` | `final_no_phi/07b_covariate_probe/covariate_coverage.csv` + `logs/07b_covariate_probe.log` — on demand: coverage of candidate covariates (location at intubation, recent procedural stay, admission type, pre-intubation code status, admission-to-intubation time, Charlson conditions with and without present-on-admission, primary-diagnosis coverage and ICD-10 chapter) in the model sample, plus which hospital each ICU sits in (anonymized) |
 | 7c | `code/07c_pool_sites.py` | `output/pooled/` — on demand, multi-site: stacks member sites' stage-7 patient rows and unit panels (site-prefixed keys, anonymized labels) after checking versions, build code, required columns and reference levels; `./run_pooled.sh` runs it and then `CLIF_SITE=pooled Rscript code/08_outcome_model.R` |
 | 6 | `code/06_compare_tiers.py` | `tier_comparison/` — on demand, proves a cold build reproduces the cached-tier panel exactly |
-| 8 | `code/08_outcome_model.R` | `final_no_phi/08_outcome_model/` — the multilevel outcome model (R): coefficients, ICC/MOR, per-unit effects, cumulative covariate blocks, Table 1, sensitivity analyses, three figures. Run after the Python pipeline |
+| 8 | `code/08_outcome_model.R` | `final_no_phi/08_outcome_model/` — the multilevel outcome model (R), adjusted for physiology at intubation: coefficients, ICC/MOR with a variance LRT and profile CI, per-unit effects, cumulative covariate blocks, Table 1, sensitivity analyses, three figures. Run after the Python pipeline |
 
 Stages 0-5 and 7 run on every build via the runner (`--from` resumes partway). Stage 7b is a
 diagnostic, run on demand after stage 7 (`./run_scores.sh --site uchicago --probe`, or
@@ -405,7 +406,7 @@ clif-vent-qi-score/
 │   ├── test_covariate_probe.py #   anonymized hospital-to-ICU summary
 │   ├── test_pool_sites.py      #   pooling: prefixing, collisions, version refusal
 │   ├── test_vendor_crrt.py     #   vendored SOFA calculator is byte-identical to its pin
-│   ├── test_sofa_crrt.py       #   P/F time-unit workaround around the vendored calculator
+│   ├── test_sofa_crrt.py       #   P/F time-unit workaround; pre-intubation GCS window
 │   └── test_phi_gate.py        #   the shareable-output identifier gate actually fires
 ├── docs/METHODS.md             # definitions, deviations, known caveats
 └── output/<site>/              # gitignored

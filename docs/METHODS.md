@@ -165,10 +165,39 @@ covariates are complete by construction, which stage 7 and stage 8 both assert.
 attributed ICU: `m1` null, `m2` adding the primary adjustment, `m3` adding the unit score centred
 on the mean of the **unit** values so its coefficient reads per 1-point increase.
 
-**Primary adjustment.** Standardised age, SOFA, and six case-mix covariates anchored at the first
-intubation. SOFA is classic SOFA from the CLIF-epidemiology-of-CRRT calculator, vendored verbatim
-in `vendor/crrt_sofa/` at the commit its `SOURCE` file records, with the respiratory subscore
-recomputed as stage 7 describes. The covariates are built in stage 7 (`common/covariates.py`):
+**Primary adjustment.** Standardised age, physiology at intubation, and six case-mix covariates
+anchored at the first intubation.
+
+*Physiology* replaces the SOFA total, so severity enters as measured values rather than a score
+built from cut-offs. Each value is the worst in the SOFA window (24 h before to 4 h after
+intubation), taken from the same extraction as SOFA: lowest oxygenation ratio, lowest MAP, highest
+norepinephrine equivalent (NEE), lowest platelets, highest bilirubin and creatinine. GCS is the
+exception: it is the lowest `gcs_total` in the 24 h strictly **before** intubation
+(`common/sofa_crrt.py` `gcs_before_intubation`), because after the airway GCS mostly measures
+sedation. Oxygenation is P/F where a PaO2 was paired, otherwise S/F converted to its P/F
+equivalent by inverting Rice 2007 (S/F = 64 + 0.84 × P/F).
+
+| Term | Form | Not measured |
+|---|---|---|
+| Oxygenation (P/F, or S/F as P/F equivalent) | natural spline | set to 400; `oxygenation_source` (P/F, S/F, none) enters as a factor |
+| MAP | natural spline | set to 85 mmHg, plus a 0/1 not-measured flag |
+| NEE | any-vasopressor flag plus a natural spline of log(1 + NEE), knots from recipients | none: no vasopressor is a true zero |
+| GCS before intubation | natural spline | set to 15, plus a flag |
+| Platelets | natural spline | set to 250 ×10³/µL, plus a flag |
+| Bilirubin | natural spline | set to 0.7 mg/dL, plus a flag |
+| Creatinine | natural spline | set to 0.9 mg/dL, plus a flag |
+
+A fill at a normal value with its own flag keeps every patient and lets the flag carry whatever
+"not measured" means beyond "normal" (a test not ordered is itself information). Splines have
+3 df, with interior knots at the tertiles of the **measured** values, so a pile of fills cannot
+put two knots on one value; where an integer score such as GCS still ties its tertiles or puts
+one on the boundary, only distinct interior knots are kept and the term has fewer degrees of
+freedom, which stage 8 prints. Bases are built once per cohort and reused by every refit within
+it. SOFA (classic SOFA from the CLIF-epidemiology-of-CRRT calculator, vendored verbatim in
+`vendor/crrt_sofa/` at the commit its `SOURCE` file records, with the respiratory subscore
+recomputed as stage 7 describes) remains in the original adjustment and in two sensitivity rows.
+
+The remaining covariates are built in stage 7 (`common/covariates.py`):
 
 | Covariate | Definition | Reference |
 |---|---|---|
@@ -184,12 +213,34 @@ by unit and year; the probe reports coverage and crude mortality only, not model
 was considered and not included.
 
 **Covariate blocks** (`covariate_blocks.csv`) add the covariates cumulatively in a fixed order —
-original adjustment (age, `cci`, SOFA) → `cci_poa` in place of `cci` → intubation setting (time,
-location, procedural stay) → limited code status → admission type — and report, per block, the
-between-unit variance with covariates alone, the share of the null variance it removes, and the
-score's OR. With this few units the order is a presentation choice, not a test. Between-unit variation is reported as the raw log-odds variance, the ICC and the
-median odds ratio; the MOR is the one to quote, since the ICC's denominator carries the
-logistic distribution's fixed individual-level variance and reads low by construction.
+original adjustment (age, `cci`, SOFA) → `cci_poa` in place of `cci` → physiology in place of
+SOFA → intubation setting (time, location, procedural stay) → limited code status → admission
+type — and report, per block, the between-unit variance with covariates alone, the share of the
+null variance it removes, and the score's OR. With this few units the order is a presentation
+choice, not a test.
+
+**Between-unit variation** is reported as the raw log-odds variance, the ICC and the median odds
+ratio; the MOR is the one to quote, since the ICC's denominator carries the logistic
+distribution's fixed individual-level variance and reads low by construction. For each of `m1`,
+`m2` and `m3`, `icc.csv` also gives:
+
+- a likelihood-ratio test of the unit variance, against a logistic model with the same fixed
+  effects and no random intercept. The null value of the variance is on the boundary of its
+  space, so the p-value is from a 50:50 mixture of χ²₀ and χ²₁ (Self & Liang 1987), half the
+  naive χ²₁ p-value;
+- a 95% profile-likelihood interval for the unit SD, carried to the variance and the MOR, both
+  monotone in it. A profile that fails to converge is reported as missing, not fatal.
+
+**The caterpillar plot** (`unit_caterpillar.png`, `unit_effects.csv`) shows each unit's
+conditional mode from `m2`, the adjusted model *without* the score, so it displays the variation
+the score is being asked to explain. A unit is coloured when a two-sided Wald test of its random
+intercept against zero rejects at 5% (|conditional mode / conditional SE| > 1.96): red, survival
+below the average unit; blue, above; black, not distinguishable. Each unit is compared with the
+average unit, not with other units, and there is no correction for multiple comparisons. The
+conditional SEs treat the fixed effects and the between-unit variance as known, which narrows
+the intervals; shrinkage pulls small units toward the average, which makes them harder to flag.
+In the pooled model the site fixed effect is in `m2`, so units are compared with the average unit
+after site-wide differences are removed.
 
 **Table 1** is stratified by tertile of the ICUs *ranked by score*, not by tertile of the patient
 distribution. With this few units the score is lumpy enough that a patient-weighted cut can leave
@@ -199,12 +250,13 @@ labels. An absent categorical value is reported as its own `Unknown` level rathe
 into another category. The p-values treat patients as independent and so ignore clustering within
 ICUs — they are descriptive. Cells are not small-cell suppressed.
 
-**Sensitivity analyses** (`sensitivity_analyses.csv`) refit the full specification under seven
-prespecified variations: the original adjustment (age, `cci`, SOFA) alone, the six SOFA subscores
-in place of the total (an absent subscore entering as 0, as in the total), `score_full` as the
-exposure, units meeting every `score_core` denominator floor, patients cared for in exactly one
-ICU, SOFA with the liver component removed (the component with the widest between-unit
-charting gap), and patients whose first IMV episode lasted at least 24 h (`first_episode_hours`,
+**Sensitivity analyses** (`sensitivity_analyses.csv`) refit the full specification under eight
+prespecified variations: the original adjustment (age, `cci`, SOFA) alone, the SOFA total in
+place of the physiology terms (the previous primary specification), the six SOFA subscores in
+place of the physiology terms (an absent subscore entering as 0, as in the total), `score_full`
+as the exposure, units meeting every `score_core` denominator floor, patients cared for in
+exactly one ICU, physiology without bilirubin (the input most dependent on whether a test was
+ordered), and patients whose first IMV episode lasted at least 24 h (`first_episode_hours`,
 the episode's end minus start, so gaps shorter than the 24 h episode-gap rule count as
 ventilated). The primary cohort has no minimum IMV duration; the 24 h row checks that brief,
 mostly post-procedural ventilation is not driving the result. Each refits its **own** null

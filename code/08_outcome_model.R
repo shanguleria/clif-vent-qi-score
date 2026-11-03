@@ -48,12 +48,60 @@ cat(sprintf("cohort '%s': %d of %d patients\n", cohort, nrow(df), n_before))
 stopifnot(nrow(df) > 0)
 COHORT_LABEL <- COHORTS[[cohort]]$label
 
+# Physiology at intubation, the primary severity adjustment in place of SOFA. Each value is the
+# worst in the SOFA window (24 h before to 4 h after intubation) except GCS, the worst in the 24 h
+# BEFORE it: after the airway, GCS mostly measures sedation. An unmeasured value is set to a fixed
+# normal one and flagged, so the flag carries the difference between "not measured" and "normal".
+# NEE has no flag: no vasopressor is a true zero. Oxygenation is P/F, else S/F as its Rice 2007
+# P/F equivalent, with its source (P/F, S/F, none) as the flag. Continuous terms are natural
+# splines with knots at the tertiles of the MEASURED values, so a pile of fills cannot collapse
+# two knots onto one value; bases are built once per cohort and reused by every refit.
+PHYS_NORMAL <- c(pf_equiv = 400, map = 85, gcs_pre = 15, platelet_count = 250,
+                 bilirubin_total = 0.7, creatinine = 0.9)
+SPLINE_KNOTS <- c(1, 2) / 3
+RICE_SF_INTERCEPT <- 64     # S/F = 64 + 0.84 x P/F; common/oxygenation.py SF_FOR_PF uses the same
+RICE_SF_SLOPE <- 0.84
+# An integer score such as GCS can put both tertiles on one value, or on the boundary; the knots
+# kept are the distinct interior ones, so such a term gets fewer degrees of freedom, reported below.
+phys_ns <- function(x, measured, name) {
+  stopifnot(!anyNA(x), sum(measured) >= 10)
+  k <- unique(quantile(x[measured], SPLINE_KNOTS, names = FALSE))
+  k <- k[k > min(x) & k < max(x)]
+  b <- splines::ns(x, knots = k, Boundary.knots = range(x))
+  setNames(as.data.frame(matrix(b, nrow(b))), paste0(name, "_ns", seq_len(ncol(b))))
+}
+stopifnot(!anyNA(df$nee))
+df$pf_equiv <- ifelse(!is.na(df$pf), df$pf, (df$sf - RICE_SF_INTERCEPT) / RICE_SF_SLOPE)
+oxy <- ifelse(!is.na(df$pf), "P/F", ifelse(!is.na(df$sf), "S/F", "none"))
+df$oxygenation_source <- factor(oxy, levels = intersect(c("P/F", "S/F", "none"), oxy))
+PHYS_GROUPS <- list()
+for (v in names(PHYS_NORMAL)) {
+  measured <- !is.na(df[[v]])
+  b <- phys_ns(ifelse(measured, df[[v]], PHYS_NORMAL[[v]]), measured, v)
+  df[names(b)] <- b
+  flag <- if (v == "pf_equiv") "oxygenation_source" else paste0(v, "_unmeasured")
+  if (v != "pf_equiv") df[[flag]] <- as.integer(!measured)
+  PHYS_GROUPS[[v]] <- c(names(b), flag)
+}
+df$nee_any <- as.integer(df$nee > 0)
+b <- phys_ns(log1p(df$nee), df$nee > 0, "nee")
+df[names(b)] <- b
+PHYS_GROUPS$nee <- c("nee_any", names(b))
+PHYS_TERMS <- unlist(PHYS_GROUPS, use.names = FALSE)
+for (v in names(PHYS_GROUPS))
+  cat(sprintf("physiology %-16s %-15s %5.1f%%  spline df %d\n", v,
+              if (v == "nee") "on a vasopressor" else "measured",
+              100 * if (v == "nee") mean(df$nee > 0) else mean(!is.na(df[[v]])),
+              sum(grepl("_ns[0-9]+$", PHYS_GROUPS[[v]]))))
+
 # The primary adjustment. ADJUST_BASE is the original specification, kept as a sensitivity row and
 # as the first covariate block; both vectors name model terms, so age enters as age_z.
 ADJUST_BASE <- c("sofa", "cci", "age_z")
-ADJUST <- c("sofa", "cci_poa", "age_z", "hours_to_intubation", "location_at_intubation",
+ADJUST <- c(PHYS_TERMS, "cci_poa", "age_z", "hours_to_intubation", "location_at_intubation",
             "procedural_within_24h", "limited_code_status", "admission_type")
-ADJUST_LABEL <- paste("age, present-on-admission Charlson comorbidity index, SOFA,",
+ADJUST_LABEL <- paste("age, present-on-admission Charlson comorbidity index, physiology at",
+                      "intubation (oxygenation, mean arterial pressure, vasopressor dose,",
+                      "pre-intubation GCS, platelets, bilirubin and creatinine),",
                       "admission-to-intubation time, location at intubation, a procedural",
                       "stay in the 24 h before intubation, limited code status and admission type")
 REF <- c(hours_to_intubation = "0-24 h", location_at_intubation = "icu", admission_type = "ed")
@@ -94,6 +142,8 @@ if (length(CONSTANT)) {
               cohort, paste(CONSTANT, collapse = ", ")))
   ADJUST <- setdiff(ADJUST, CONSTANT)
   ADJUST_BASE <- setdiff(ADJUST_BASE, CONSTANT)
+  PHYS_TERMS <- setdiff(PHYS_TERMS, CONSTANT)
+  PHYS_GROUPS <- lapply(PHYS_GROUPS, setdiff, CONSTANT)
   ADJUST_LABEL <- paste0(ADJUST_LABEL, " (", paste(CONSTANT, collapse = ", "),
                          " constant in this cohort, so omitted)")
 }
@@ -166,11 +216,32 @@ icc <- data.frame(model = c("m1", "m2", "m3"),
 icc$sd_logodds <- sqrt(icc$between_unit_var)
 icc$or_per_sd_unit <- exp(icc$sd_logodds)
 icc$icc <- icc$between_unit_var / (icc$between_unit_var + pi^2 / 3)
-icc$mor <- exp(sqrt(2 * icc$between_unit_var) * qnorm(0.75))
-
-# What the MOR is worth in SOFA points, the covariate with the clearest scale.
-icc$mor_in_sofa_points <- log(icc$mor) / fixef(m3)["sofa"]
+mor_of_sd <- function(s) exp(sqrt(2) * s * qnorm(0.75))
+icc$mor <- mor_of_sd(sqrt(icc$between_unit_var))
 icc$var_explained_vs_m1 <- 1 - icc$between_unit_var / icc$between_unit_var[1]
+
+# Is there between-unit variation at all? Each model against its twin with the same fixed effects
+# and no random intercept. The null puts the variance on the boundary of its space, so the
+# reference is a 50:50 mixture of chi-square(0) and chi-square(1) (Self & Liang 1987).
+lrt <- function(m, terms) {
+  g <- glm(reformulate(terms, response = "died"), data = df, family = binomial)
+  max(0, 2 * (as.numeric(logLik(m)) - as.numeric(logLik(g))))
+}
+icc$lrt_chisq <- c(lrt(m1, "1"), lrt(m2, ADJUST), lrt(m3, c(ADJUST, "qclif_centered")))
+icc$lrt_p <- 0.5 * pchisq(icc$lrt_chisq, df = 1, lower.tail = FALSE)
+# 95% profile-likelihood interval for the unit SD, carried to the variance and the MOR, both
+# monotone in it. Profiling refits the model many times; a failure is reported, not fatal.
+sd_ci <- function(m) tryCatch(
+  unname(confint(m, parm = "theta_", method = "profile", oldNames = FALSE)[1, ]),
+  error = function(e) {
+    message("profile interval for the unit SD failed: ", conditionMessage(e))
+    c(NA_real_, NA_real_)
+  })
+ci_sd <- do.call(rbind, lapply(list(m1, m2, m3), sd_ci))
+icc$between_unit_var_lo <- ci_sd[, 1]^2
+icc$between_unit_var_hi <- ci_sd[, 2]^2
+icc$mor_lo <- mor_of_sd(ci_sd[, 1])
+icc$mor_hi <- mor_of_sd(ci_sd[, 2])
 write.csv(icc, file.path(out, "icc.csv"), row.names = FALSE)
 
 writeLines(c(
@@ -182,8 +253,12 @@ writeLines(c(
   "                  reads low by construction (1-3% is typical for hospital mortality)",
   "mor               median odds ratio: median ratio of the odds of death for two",
   "                  identical patients in two randomly chosen units. Quote this one.",
-  "mor_in_sofa_points  the MOR expressed as an equivalent number of SOFA points",
-  "var_explained_vs_m1 fraction of m1's between-unit variance removed by adjustment"
+  "var_explained_vs_m1 fraction of m1's between-unit variance removed by adjustment",
+  "lrt_chisq, lrt_p    likelihood-ratio test of the unit variance against the same fixed",
+  "                  effects without a random intercept; p from the 50:50 chi-square(0)/(1)",
+  "                  mixture, because the null value 0 is on the boundary",
+  "between_unit_var_lo/hi, mor_lo/hi  95% profile-likelihood interval for the unit SD,",
+  "                  carried to the variance and the MOR"
 ), file.path(out, "icc_readme.txt"))
 
 # Unadjusted, per unit
@@ -300,8 +375,8 @@ row_cont <- function(label, v, dec = 0, p = p_cont(v), sub = FALSE)
   emit(if (sub) label else bold(label),
        vapply(idx, function(i) fmt_iqr(v[i], dec), ""), fmt_p(p))
 
-row_bin <- function(label, b)
-  emit(bold(label), vapply(idx, function(i) fmt_npct(sum(b[i]), sum(i)), ""),
+row_bin <- function(label, b, sub = FALSE)
+  emit(if (sub) label else bold(label), vapply(idx, function(i) fmt_npct(sum(b[i]), sum(i)), ""),
        fmt_p(p_cat(factor(b))))
 
 row_cat <- function(label, x) {
@@ -321,6 +396,22 @@ row_cont("Charlson comorbidity index, present on admission", df$cci_poa)
 row_cont("SOFA at intubation", df$sofa)
 emit(bold("SOFA components"), blank, "")
 for (col in names(SOFA_COMPONENTS)) row_cont(SOFA_COMPONENTS[[col]], df[[col]], sub = TRUE)
+# Measured values only; the fills that enter the model are not physiology.
+PHYS_LABELS <- c(pf_equiv = "P/F ratio, or S/F as its P/F equivalent",
+                 map = "Mean arterial pressure, mmHg",
+                 gcs_pre = "GCS, worst in the 24 h before intubation",
+                 platelet_count = "Platelets, x10^3/uL",
+                 bilirubin_total = "Bilirubin, mg/dL", creatinine = "Creatinine, mg/dL")
+PHYS_DEC <- c(pf_equiv = 0, map = 0, gcs_pre = 0, platelet_count = 0, bilirubin_total = 1,
+              creatinine = 1)
+stopifnot(setequal(names(PHYS_LABELS), names(PHYS_NORMAL)))
+emit(bold("Physiology at intubation, worst value where measured"), blank, "")
+for (v in names(PHYS_LABELS)) row_cont(PHYS_LABELS[[v]], df[[v]], dec = PHYS_DEC[[v]], sub = TRUE)
+row_bin("Any vasopressor", df$nee > 0, sub = TRUE)
+row_cont("Norepinephrine equivalent, mcg/kg/min, if any",
+         ifelse(df$nee > 0, df$nee, NA_real_), dec = 2, sub = TRUE)
+emit(bold("Not measured in the window"), blank, "")
+for (v in names(PHYS_LABELS)) row_bin(PHYS_LABELS[[v]], is.na(df[[v]]), sub = TRUE)
 row_cat("Admission type", df$admission_type)
 row_cat("Admission to intubation", factor(df$hours_to_intubation, levels = HOURS_LEVELS))
 row_cat("Location at intubation", df$location_at_intubation)
@@ -375,23 +466,29 @@ fit_one <- function(id, desc, d, exposure = "qclif", adjust = ADJUST) {
 }
 
 swap <- function(terms, from, to) unlist(lapply(terms, function(term) if (term == from) to else term))
+NON_PHYS <- setdiff(ADJUST, PHYS_TERMS)
+# Block descriptions name the physiology set once rather than its spline columns.
+describe <- function(terms)
+  paste(c(if (any(terms %in% PHYS_TERMS)) "physiology", setdiff(terms, PHYS_TERMS)),
+        collapse = " + ")
 
 # A missing subscore enters as 0, the convention the SOFA total already applies.
 for (col in names(SOFA_COMPONENTS)) df[[paste0(col, "_0")]] <- ifelse(is.na(df[[col]]), 0, df[[col]])
-df$sofa_no_liver <- df$sofa - df$sofa_liver_0
 sens <- rbind(
   fit_one("primary", "primary adjustment, score_core, all complete cases", df),
   fit_one("original_adjustment", "age, cci and SOFA only (the original specification)",
           df, adjust = ADJUST_BASE),
-  fit_one("sofa_components", "the six SOFA subscores in place of the total, absent = 0",
-          df, adjust = swap(ADJUST, "sofa", paste0(names(SOFA_COMPONENTS), "_0"))),
+  fit_one("sofa_total", "SOFA total in place of the physiology terms",
+          df, adjust = c("sofa", NON_PHYS)),
+  fit_one("sofa_components", "the six SOFA subscores in place of the physiology terms, absent = 0",
+          df, adjust = c(paste0(names(SOFA_COMPONENTS), "_0"), NON_PHYS)),
   fit_one("score_full", "exposure includes proning (score_full)", df, exposure = "score_full"),
   fit_one("above_floor", "units meeting every score_core denominator floor",
           df[!df$score_core_low, ]),
   fit_one("single_icu", "patients cared for in exactly one ICU",
           df[!is.na(df$n_icus) & df$n_icus == 1, ]),
-  fit_one("sofa_minus_liver", "SOFA excluding the liver component",
-          df, adjust = swap(ADJUST, "sofa", "sofa_no_liver")),
+  fit_one("no_bilirubin", "physiology without bilirubin",
+          df, adjust = setdiff(ADJUST, PHYS_GROUPS$bilirubin_total)),
   fit_one("imv_24h", "first IMV episode lasting at least 24 h",
           df[which(df$first_episode_hours >= MIN_IMV_HOURS), ]))
 if (POOLED) sens <- rbind(sens, do.call(rbind, lapply(levels(df$site), function(s)
@@ -417,24 +514,27 @@ stopifnot(isTRUE(all.equal(sens$qclif_or_per_point[1],
 # Cumulative, in a fixed prespecified order, from the original specification to the primary one.
 # Read for how each block moves the between-unit variance and the score's OR; with this few units
 # the order is a presentation choice, not a test.
+POA_BASE <- swap(ADJUST_BASE, "cci", "cci_poa")
+PHYS_BASE <- swap(POA_BASE, "sofa", PHYS_TERMS)
+SETTING <- c("hours_to_intubation", "location_at_intubation", "procedural_within_24h")
 BLOCKS <- list(
   original                = ADJUST_BASE,
-  poa_charlson            = swap(ADJUST_BASE, "cci", "cci_poa"),
-  intubation_setting      = c(swap(ADJUST_BASE, "cci", "cci_poa"), "hours_to_intubation",
-                              "location_at_intubation", "procedural_within_24h"),
-  limited_code_status     = c(swap(ADJUST_BASE, "cci", "cci_poa"), "hours_to_intubation",
-                              "location_at_intubation", "procedural_within_24h",
-                              "limited_code_status"),
+  poa_charlson            = POA_BASE,
+  physiology              = PHYS_BASE,
+  intubation_setting      = c(PHYS_BASE, SETTING),
+  limited_code_status     = c(PHYS_BASE, SETTING, "limited_code_status"),
   admission_type          = ADJUST)
 BLOCKS <- lapply(BLOCKS, setdiff, CONSTANT)
-# The first step swaps cci for cci_poa; every later step only adds.
-added <- BLOCKS[-1]
+# The first two steps are swaps (cci for cci_poa, then SOFA for physiology); every later step
+# only adds.
+added <- BLOCKS[-(1:2)]
 stopifnot(setequal(BLOCKS[[1]], ADJUST_BASE),
-          setequal(BLOCKS[[2]], swap(ADJUST_BASE, "cci", "cci_poa")),
+          setequal(BLOCKS[[2]], POA_BASE),
+          setequal(BLOCKS[[3]], PHYS_BASE),
           all(mapply(function(a, b) all(a %in% b), added[-length(added)], added[-1])),
           setequal(BLOCKS[[length(BLOCKS)]], ADJUST))
 blocks <- do.call(rbind, lapply(names(BLOCKS), function(b)
-  fit_one(b, paste(BLOCKS[[b]], collapse = " + "), df, adjust = BLOCKS[[b]])))
+  fit_one(b, describe(BLOCKS[[b]]), df, adjust = BLOCKS[[b]])))
 blocks <- blocks[, setdiff(SENS_COLS, "n_excluded")]
 names(blocks)[names(blocks) == "analysis"] <- "block"
 write.csv(blocks, file.path(out, "covariate_blocks.csv"), row.names = FALSE)
@@ -540,12 +640,19 @@ writeLines(c(
   "errors, converted to the predicted probability of surviving to discharge for a",
   sprintf("patient at the cohort-mean covariate profile (reference line, the average unit, %.1f%%).",
           SURV_AVG),
-  "Units are coloured by whether the unit is distinguishable from the average unit at the 5% level. Units are",
-  "ordered by point estimate and labelled ICU 1 (lowest) onward, with no site or unit name;",
-  sprintf("the icu column of unit_effects.csv is the key. n per unit ranges %s to %s. The intervals are",
+  "Units are coloured by a separate two-sided Wald test for each unit of whether its random",
+  "intercept differs from zero (|conditional mode / conditional SE| > 1.96): red, survival",
+  "below the average unit; blue, above; black, not distinguishable. This compares each unit",
+  "with the average unit, not units with one another, and is not corrected for multiple",
+  "comparisons: if no unit truly differed, about 1 in 20 would still be coloured. The",
+  "conditional standard errors treat the fixed effects and the between-unit variance as known,",
+  "which narrows the intervals; shrinkage pulls small units toward the average, which widens",
+  "the bar for flagging them.",
+  if (POOLED) paste("The model includes a fixed effect for site, so each unit is compared with",
+                    "the average unit after site-wide differences are removed.") else NULL,
+  "Units are ordered by point estimate and labelled ICU 1 (lowest) onward, with no site or",
+  sprintf("unit name; the icu column of unit_effects.csv is the key. n per unit ranges %s to %s.",
           format(min(cat_tab$n), big.mark = ","), format(max(cat_tab$n), big.mark = ",")),
-  "comparative (conditional on the estimated between-unit variance), so they address",
-  "whether units differ from the average.",
   "",
   "**exposure_response.png** — Adjusted probability of in-hospital death as a function of",
   sprintf("the unit ventilator QI score (score_core), from the full model (%s,", ADJUST_LABEL),
@@ -577,9 +684,9 @@ writeLines(c(
   "",
   "**covariate_blocks.csv** — Cumulative covariate blocks, from the original adjustment (age,",
   "Charlson comorbidity index, SOFA) to the primary one, in a prespecified order: the",
-  "present-on-admission Charlson index in place of the all-diagnosis one; then",
-  "admission-to-intubation time, location at intubation and a procedural stay in the 24 h",
-  "before intubation; then limited code status (a DNR-type order at or before intubation;",
+  "present-on-admission Charlson index in place of the all-diagnosis one; then physiology",
+  "at intubation in place of SOFA; then admission-to-intubation time, location at",
+  "intubation and a procedural stay in the 24 h before intubation; then limited code status (a DNR-type order at or before intubation;",
   "Full and no recorded order are one level, because recording varies by year and unit);",
   "then admission type. Each row gives the between-unit variance with the covariates alone",
   "and the share of the unadjusted variance they remove, then the score's odds ratio per point",

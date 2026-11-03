@@ -24,7 +24,7 @@ SPO2_MAX_FOR_SF = 97.0
 #: Devices that satisfy the "with respiratory support" qualifier on SOFA respiratory 3 and 4.
 SUPPORT_DEVICES = {"imv", "nippv", "cpap"}
 
-# Rice 2007: SF = 64 + 0.84 x PF.
+# Rice 2007: SF = 64 + 0.84 x PF. code/08_outcome_model.R inverts the same line (RICE_SF_*).
 SF_FOR_PF = {400: 400.0, 300: 316.0, 200: 232.0, 100: 148.0}
 
 
