@@ -38,3 +38,22 @@ def test_require_columns_fires_on_each_missing_demographic(absent):
     cohort = pd.DataFrame({c: ["x"] for c in mod.REQUIRED_EXTENDED if c != absent})
     with pytest.raises(AssertionError, match=absent):
         mod.require_columns(cohort, mod.REQUIRED_EXTENDED, "demographics")
+
+
+def test_poa_mask_handles_nullable_missing_flags():
+    mod = _stage07()
+    flag = pd.Series([1, 0, None, 1], dtype="Int64")
+    assert mod.poa_mask(flag).tolist() == [True, False, False, True]
+    df = pd.DataFrame({"x": list("abcd")})
+    assert df[mod.poa_mask(flag)]["x"].tolist() == ["a", "d"]
+
+
+@pytest.mark.parametrize("flag", [pd.Series([1.0, float("nan"), 0.0]), pd.Series(["1", None, "0"])])
+def test_poa_mask_handles_float_and_string_flags(flag):
+    assert _stage07().poa_mask(flag).tolist() == [True, False, False]
+
+
+def test_nullable_eq_alone_is_the_bug_poa_mask_avoids():
+    flag = pd.Series([1, None], dtype="Int64")
+    with pytest.raises(ValueError, match="NA"):
+        pd.DataFrame({"x": [1, 2]})[flag.eq(1).to_numpy()]

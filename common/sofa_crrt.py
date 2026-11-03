@@ -73,7 +73,7 @@ def lab_in_window(src, cfg, category, mapping, windows, agg="max") -> pd.Series:
         L = stage.load_staged_chunk(cfg, "phase_b", "labs", chunk)
         if not len(L):
             continue
-        L = L[L["lab_category"].eq(category)]
+        L = L[L["lab_category"].eq(category).fillna(False)]
         if not len(L):
             continue
         L["hospitalization_id"] = L["hospitalization_id"].astype(str)
@@ -100,7 +100,7 @@ def oxygenation_inputs(src, cfg, mapping, windows):
         chunk = int(p.stem.split("_")[1])
         L = stage.load_staged_chunk(cfg, "phase_b", "labs", chunk)
         if len(L):
-            L = L[L["lab_category"].eq("po2_arterial")]
+            L = L[L["lab_category"].eq("po2_arterial").fillna(False)]
             if len(L):
                 L["hospitalization_id"] = L["hospitalization_id"].astype(str)
                 L = L.merge(mapping, on="hospitalization_id")
@@ -111,7 +111,7 @@ def oxygenation_inputs(src, cfg, mapping, windows):
                     pao2.append(L[["encounter_block", "t"]].assign(value=L["lab_value_numeric"]))
         V = stage.load_staged_chunk(cfg, "phase_b", "vitals", chunk)
         if len(V):
-            V = V[V["vital_category"].eq("spo2")]
+            V = V[V["vital_category"].eq("spo2").fillna(False)]
             if len(V):
                 V["hospitalization_id"] = V["hospitalization_id"].astype(str)
                 V = V.merge(mapping, on="hospitalization_id")

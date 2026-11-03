@@ -83,27 +83,32 @@ def test_check_site_frame_reports_missing_columns_and_gaps(pool):
 
 def test_versions_refuse_definition_mismatch(pool):
     provs = {"Site A": PROV, "Site B": {**PROV, "definition_version": "v2"}}
-    problems = pool.check_versions(provs, "rows", same_code=lambda a, b: True)
+    problems = pool.check_versions(provs, "rows", pool.ROW_PATHS, same_code=lambda a, b, paths: True)
     assert any("definition_version" in p for p in problems)
 
 
 def test_versions_refuse_when_build_code_differs(pool):
     provs = {"Site A": PROV, "Site B": {**PROV, "code_version": "def5678"}}
-    problems = pool.check_versions(provs, "rows", same_code=lambda a, b: a == b)
+    problems = pool.check_versions(provs, "rows", pool.ROW_PATHS, same_code=lambda a, b, paths: a == b)
     assert any("build code differs" in p for p in problems)
 
 
 def test_versions_pass_different_commits_with_same_build_code(pool):
     provs = {"Site A": PROV, "Site B": {**PROV, "code_version": "def5678"}}
-    assert pool.check_versions(provs, "rows", same_code=lambda a, b: True) == []
+    assert pool.check_versions(provs, "rows", pool.ROW_PATHS, same_code=lambda a, b, paths: True) == []
 
 
 def test_git_same_code_needs_a_version(pool):
     with pytest.raises(ValueError, match="code_version"):
-        pool.git_same_code(None, "abc1234")
+        pool.git_same_code(None, "abc1234", pool.ROW_PATHS)
 
 
 def test_git_same_code_on_real_history(pool):
-    # 8e79c8d and d4fd793 differ in common/sofa_crrt.py and code/07, both build paths.
-    assert pool.git_same_code("d4fd793", "d4fd793")
-    assert not pool.git_same_code("d4fd793", "8e79c8d")
+    # 8e79c8d changed common/sofa_crrt.py and code/07 (row paths) but nothing stages 0-4 import.
+    assert pool.git_same_code("d4fd793", "d4fd793", pool.ROW_PATHS)
+    assert not pool.git_same_code("d4fd793", "8e79c8d", pool.ROW_PATHS)
+    assert pool.git_same_code("d4fd793", "8e79c8d", pool.PANEL_PATHS)
+
+
+def test_panel_paths_are_a_subset_of_row_paths(pool):
+    assert set(pool.PANEL_PATHS) <= set(pool.ROW_PATHS)

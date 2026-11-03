@@ -188,10 +188,10 @@ def main() -> int:
             dist = {str(k): int(v) for k, v in poa.value_counts(dropna=False).items()}
             log(f"[poa] {poa_col} values among cohort diagnosis rows: {dist}")
             presence["poa_distribution"] = dist
-        if poa_col is not None and not poa.eq(1).any():
+        if poa_col is not None and not poa.eq(1).fillna(False).any():
             log(f"[absent] no {poa_col} == 1 rows; POA-restricted conditions not computed")
         elif poa_col is not None:
-            comp_poa = cci_components(hd[poa.eq(1).to_numpy()], mapping, cohort)
+            comp_poa = cci_components(hd[poa.eq(1).fillna(False).to_numpy(dtype=bool)], mapping, cohort)
             cohort = cohort.join(comp_poa.add_prefix("cci_poa::"))
             candidates += [f"cci_poa::{c}" for c in comp_poa.columns]
 

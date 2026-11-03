@@ -125,6 +125,12 @@ def dominant_icu(cohort, icu) -> pd.DataFrame:
     return top.merge(n_units, on="encounter_block").merge(total, on="encounter_block")
 
 
+def poa_mask(flag: pd.Series) -> np.ndarray:
+    """True where the flag is 1. A missing flag is not present on admission; with a nullable
+    integer column, `.eq(1)` alone yields NA there, which pandas refuses as a row mask."""
+    return pd.to_numeric(flag, errors="coerce").eq(1).fillna(False).to_numpy(dtype=bool)
+
+
 def require_columns(cohort, cols, what):
     """The extended export drops a column it cannot find, so anything load-bearing is named
     here and fails the run instead of going missing from the artifact."""
@@ -269,7 +275,13 @@ def main() -> int:
 
     if POA_COLUMN not in hd.columns:
         raise AssertionError(f"hospital_diagnosis.{POA_COLUMN} is required for cci_poa")
-    poa = pd.to_numeric(hd[POA_COLUMN], errors="coerce").eq(1).to_numpy()
+    # Reported, because a site whose flag is mostly missing would otherwise get a near-zero cci_poa
+    # without any error.
+    poa_raw = pd.to_numeric(hd[POA_COLUMN], errors="coerce")
+    poa = poa_mask(hd[POA_COLUMN])
+    print(f"[poa] {POA_COLUMN}: {int(poa.sum()):,} rows = 1, "
+          f"{int(poa_raw.eq(0).fillna(False).sum()):,} = 0, "
+          f"{int(poa_raw.isna().sum()):,} missing (treated as not present on admission)")
     for diagnoses, name in ((hd, "cci"), (hd[poa], "cci_poa")):
         cohort = cohort.merge(cci_by_block(diagnoses, name), on="encounter_block", how="left")
         cohort[name] = cohort[name].fillna(0)

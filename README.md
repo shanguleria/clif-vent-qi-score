@@ -268,7 +268,8 @@ CLIF_SITE=pooled Rscript code/08_outcome_model.R
 
 Raw CLIF tables are never merged. Stage 7c refuses to pool sites whose definitions, CLIF version
 or upstream SHA differ, or whose row- and panel-building code differs between the commits they
-ran (`git diff` over the build paths, so unrelated commits do not block). Keys are prefixed with
+ran (`git diff` over the files each one imports: panels compare only what stages 0-4 import, so a
+stage-7 fix means rerunning stage 7, not a cold build; unrelated commits never block). Keys are prefixed with
 the site letter and units are labelled `Site A · Unit n`; the letter-to-site key is written to
 `output/pooled/intermediate_phi/site_key.json` only. In pooled mode stage 8 adds a site fixed
 effect to every specification and leave-one-site-out sensitivity rows.

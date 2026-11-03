@@ -13,7 +13,8 @@ with the letter, so no site's identifiers or name reach the pooled rows.
 Refuses to pool when:
   - definition_version, clif_version or the upstream clif-dashboards SHA differ between sites
   - the code that builds patient rows or panels differs between the commits the sites ran
-    (checked with git diff over BUILD_PATHS, so commits that touch nothing else do not block)
+    (git diff over ROW_PATHS for patient rows and PANEL_PATHS for panels, so commits that touch
+    neither do not block)
   - a required column is missing, a model covariate has gaps, a reference level is absent,
     or a key collides after prefixing
 
@@ -37,12 +38,14 @@ from common import covariates as cov                                   # noqa: E
 
 STEP = "07c_pool_sites"
 
-# Everything that shapes a site's patient rows or unit panel. A commit touching none of these
-# cannot change what stages 0-7 produced, so sites built at different such commits still pool.
-BUILD_PATHS = ["bundle_config.py", "requirements.txt", "common", "vendor", "definitions",
+# What stages 0-4 import, i.e. everything that shapes a site's unit panel. A commit touching none
+# of these cannot change the panel, so panels built at different such commits still pool.
+PANEL_PATHS = ["bundle_config.py", "requirements.txt", "definitions", "common/__init__.py",
+               "common/attribution.py", "common/cohort_source.py", "common/scoring.py",
                "code/00_probe_units.py", "code/01_build_cohort.py", "code/02_metric_records.py",
-               "code/03_build_panel.py", "code/04_exposure_assignment.py",
-               "code/07_analysis_dataset.py"]
+               "code/03_build_panel.py", "code/04_exposure_assignment.py"]
+# Patient rows depend on the panel plus stage 7 and everything it imports.
+ROW_PATHS = PANEL_PATHS + ["common", "vendor", "code/07_analysis_dataset.py"]
 
 MUST_MATCH = ("definition_version", "clif_version", "upstream_sha")
 PREFIXED = ("patient_id", "hospitalization_id", "encounter_block", "unit_name")
@@ -89,12 +92,12 @@ def site_letters(members: list[str]) -> dict[str, str]:
     return {m: f"Site {string.ascii_uppercase[i]}" for i, m in enumerate(members)}
 
 
-def git_same_code(sha_a: str | None, sha_b: str | None) -> bool:
+def git_same_code(sha_a: str | None, sha_b: str | None, paths: list[str]) -> bool:
     if not sha_a or not sha_b:
         raise ValueError("a site's provenance has no code_version; rerun it from a git checkout")
     if sha_a == sha_b:
         return True
-    r = subprocess.run(["git", "-C", str(ROOT), "diff", "--quiet", sha_a, sha_b, "--", *BUILD_PATHS],
+    r = subprocess.run(["git", "-C", str(ROOT), "diff", "--quiet", sha_a, sha_b, "--", *paths],
                        capture_output=True, text=True)
     if r.returncode not in (0, 1):
         raise RuntimeError(f"git diff {sha_a} {sha_b} failed: {r.stderr.strip()} "
@@ -102,7 +105,8 @@ def git_same_code(sha_a: str | None, sha_b: str | None) -> bool:
     return r.returncode == 0
 
 
-def check_versions(provs: dict[str, dict], what: str, same_code=git_same_code) -> list[str]:
+def check_versions(provs: dict[str, dict], what: str, paths: list[str],
+                   same_code=git_same_code) -> list[str]:
     """`provs` maps site -> provenance block. Returns problems; empty means poolable."""
     problems = []
     sites = list(provs)
@@ -113,7 +117,7 @@ def check_versions(provs: dict[str, dict], what: str, same_code=git_same_code) -
     ref = sites[0]
     for s in sites[1:]:
         a, b = provs[ref].get("code_version"), provs[s].get("code_version")
-        if not same_code(a, b):
+        if not same_code(a, b, paths):
             problems.append(f"{what}: build code differs between {ref} ({a}) and {s} ({b}); "
                             f"rerun the older site on the current commit")
     return problems
@@ -189,8 +193,9 @@ def main() -> int:
         problems += check_site_frame(rows[m], letters[m])
     if not problems:
         problems += check_versions({letters[m]: manifests[m]["provenance"] for m in members},
-                                   "patient rows")
-        problems += check_versions({letters[m]: panel_provs[m] for m in members}, "unit panel")
+                                   "patient rows", ROW_PATHS)
+        problems += check_versions({letters[m]: panel_provs[m] for m in members}, "unit panel",
+                                   PANEL_PATHS)
         impl = {letters[m]: manifests[m]["sofa"]["implementation"] for m in members}
         if len(set(impl.values())) > 1:
             problems.append(f"SOFA implementation differs across sites: {impl}")
@@ -247,7 +252,8 @@ def main() -> int:
         "panel_provenance": {letters[m]: {k: v for k, v in panel_provs[m].items() if k != "site_id"}
                              for m in members},
         "n_patients": int(len(pooled_rows)), "n_units": int(pooled_panel["unit_name"].nunique()),
-        "build_paths_compared": BUILD_PATHS}, indent=2, default=str))
+        "row_paths_compared": ROW_PATHS, "panel_paths_compared": PANEL_PATHS},
+        indent=2, default=str))
 
     log(f"\n[done] output/{name}/intermediate_phi/analysis/analysis_dataset_extended.parquet")
     log(f"       output/{name}/final_no_phi/unit_panel.parquet (+ _anonymized.csv)")
