@@ -155,7 +155,68 @@ on).
 
 ---
 
-## 5. Caveats
+## 5. Outcome model
+
+`code/08_outcome_model.R`. One row per patient, their first qualifying IMV hospitalisation,
+restricted to complete cases on outcome, exposure, SOFA, Charlson and age; the remaining
+covariates are complete by construction, which stage 7 and stage 8 both assert.
+
+**Model chain.** Three nested mixed-effects logistic models with a random intercept for the
+attributed ICU: `m1` null, `m2` adding the primary adjustment, `m3` adding the unit score centred
+on the mean of the **unit** values so its coefficient reads per 1-point increase.
+
+**Primary adjustment.** Standardised age, SOFA, and six case-mix covariates anchored at the first
+intubation. SOFA is classic SOFA from the CLIF-epidemiology-of-CRRT calculator, vendored verbatim
+in `vendor/crrt_sofa/` at the commit its `SOURCE` file records, with the respiratory subscore
+recomputed as stage 7 describes. The covariates are built in stage 7 (`common/covariates.py`):
+
+| Covariate | Definition | Reference |
+|---|---|---|
+| `cci_poa` | Charlson index from `hospital_diagnosis` rows with `poa_present = 1`, same implementation as `cci`. Replaces `cci`, which also counts conditions acquired during the stay | — |
+| `hours_to_intubation` | Admission to first intubation: ≤ 0 h, 0–24 h, 24–72 h, 72 h–7 d, > 7 d. ≤ 0 h marks intubation before arrival | 0–24 h |
+| `location_at_intubation` | `adt.location_category` of the row spanning intubation on half-open intervals; `ed`, `icu`, `procedural` kept, no covering row → `unknown`, every other category → `ward_other` | `icu` |
+| `procedural_within_24h` | Any `procedural` ADT stay overlapping the 24 h before intubation — the post-operative case mix | 0 |
+| `limited_code_status` | Last `code_status_category` at or before intubation is a DNR-type order (DNR, DNAR, UDNR, DNR/DNI, DNAR/DNI, AND). Full and no recorded order form one level: recording of any order varies by year and by unit, so separating them would adjust for documentation practice. Orders after intubation are excluded as mediators. A category in neither set (e.g. `Other`) stops stage 7 until classified | 0 |
+| `admission_type` | `admission_type_category` of the encounter's first hospitalization | `ed` |
+
+The covariates were chosen after `code/07b_covariate_probe.py` tabulated each candidate's coverage
+by unit and year; the probe reports coverage and crude mortality only, not model fit. Calendar year
+was considered and not included.
+
+**Covariate blocks** (`covariate_blocks.csv`) add the covariates cumulatively in a fixed order —
+original adjustment (age, `cci`, SOFA) → `cci_poa` in place of `cci` → intubation setting (time,
+location, procedural stay) → limited code status → admission type — and report, per block, the
+between-unit variance with covariates alone, the share of the null variance it removes, and the
+score's OR. With this few units the order is a presentation choice, not a test. Between-unit variation is reported as the raw log-odds variance, the ICC and the
+median odds ratio; the MOR is the one to quote, since the ICC's denominator carries the
+logistic distribution's fixed individual-level variance and reads low by construction.
+
+**Table 1** is stratified by tertile of the ICUs *ranked by score*, not by tertile of the patient
+distribution. With this few units the score is lumpy enough that a patient-weighted cut can leave
+a stratum holding a single ICU, which would publish that ICU's case mix in a column of its own.
+Strata therefore differ in size; `table1_tertiles.csv` records the composition with anonymised
+labels. An absent categorical value is reported as its own `Unknown` level rather than folded
+into another category. The p-values treat patients as independent and so ignore clustering within
+ICUs — they are descriptive. Cells are not small-cell suppressed.
+
+**Sensitivity analyses** (`sensitivity_analyses.csv`) refit the full specification under six
+prespecified variations: the original adjustment (age, `cci`, SOFA) alone, the six SOFA subscores
+in place of the total (an absent subscore entering as 0, as in the total), `score_full` as the
+exposure, units meeting every `score_core` denominator floor, patients cared for in exactly one
+ICU, and SOFA with the liver component removed (the component with the widest between-unit
+charting gap). Each refits its **own** null
+model on its own subset, so `var_explained_vs_null` compares like with like; `n_excluded` is
+reported so a restriction that happens to exclude nobody reads as vacuous rather than as applied.
+
+**The exposure-response figure** holds every covariate at its cohort mean and the random effect
+at zero, and traces predicted mortality across the observed score range from `m3`. The band is
+the 95% interval from the fixed-effect covariance alone. ICUs are overlaid at their own score and
+at the adjusted mortality implied by the conditional mode from `m2` — the model that has not seen
+the score — so the points are not fitted to the line they are plotted against.
+
+---
+
+## 6. Caveats
 
 1. **SAT may be effectively a phenotype measure.** Where `sat_delivery_pass_fail` is sparsely
    documented, the SAT numerator is driven almost entirely by the sedative-interruption phenotype
@@ -187,3 +248,8 @@ on).
    `DeprecationWarning: The 'generic' unit for NumPy timedelta is deprecated` from inside pandas'
    own `Timestamp` arithmetic. The unit at every call site here is explicit and the arithmetic is
    asserted correct in `tests/test_scoring.py`; the warning is filtered narrowly in stage 2.
+9. **The score is a level-2 exposure, so a single site cannot power it.** Its coefficient is
+   estimated from as many points as the site has ICUs, however many patients contribute, and the
+   confidence band in the exposure-response figure reflects fixed-effect uncertainty only — read
+   it as a lower bound. Single-site results are descriptive; the fix is more participating sites,
+   not more patients.

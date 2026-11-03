@@ -13,8 +13,12 @@ so patients intubated in the ED or moved between units are attributed to where t
 for. SOFA spans 24 h before to 4 h after intubation, so the intubation counts toward the severity
 it marks.
 
-Writes to intermediate_phi/analysis/: the eight columns, an extended frame with diagnostics, and
-missingness reports per covariate, per SOFA component and per unit.
+The case-mix covariates in MODEL_COVARIATES (present-on-admission Charlson, admission-to-intubation
+time, location at intubation, a procedural stay in the prior 24 h, limited code status, admission
+type) are built in `common/covariates.py` and carried in the extended frame, which stage 8 reads.
+
+Writes to intermediate_phi/analysis/: the eight columns, an extended frame with covariates and
+diagnostics, and missingness reports per covariate, per SOFA component and per unit.
 
 Run:  .venv/bin/python code/07_analysis_dataset.py [--site uchicago]
 """
@@ -33,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import bundle_config as bc                                             # noqa: E402
 from common import attribution as attr                                 # noqa: E402
 from common import cohort_source                                       # noqa: E402
+from common import covariates as cov                                   # noqa: E402
 
 from common import sofa_crrt                                           # noqa: E402
 
@@ -53,6 +58,14 @@ QCLIF_SCORE = "score_core"
 
 # A missing subscore is summed as 0, i.e. as normal, so a charting gap is indistinguishable from
 # health unless the inputs behind it are inspected.
+REQUIRED_EXTENDED = ["sex_category", "race_category", "ethnicity_category"]
+
+# The primary adjustment beyond age, sofa and cci, all anchored at the first intubation.
+MODEL_COVARIATES = ["cci_poa", "hours_to_intubation", "location_at_intubation",
+                    "procedural_within_24h", "limited_code_status", "admission_type"]
+
+POA_COLUMN = "poa_present"
+
 SOFA_INPUTS = {
     "sofa_cns":    ["gcs_total"],
     "sofa_resp":   ["pf", "sf"],
@@ -112,6 +125,14 @@ def dominant_icu(cohort, icu) -> pd.DataFrame:
     return top.merge(n_units, on="encounter_block").merge(total, on="encounter_block")
 
 
+def require_columns(cohort, cols, what):
+    """The extended export drops a column it cannot find, so anything load-bearing is named
+    here and fails the run instead of going missing from the artifact."""
+    missing = [c for c in cols if c not in cohort.columns]
+    if missing:
+        raise AssertionError(f"{what} absent from the cohort: {missing}")
+
+
 def missingness_report(df, sofa, comp, out, log=print):
     """Per-covariate and per-component missingness, plus the inputs behind each component."""
     rows = []
@@ -121,11 +142,16 @@ def missingness_report(df, sofa, comp, out, log=print):
                      "n_missing": int(n - present), "pct_missing": round(100 * (n - present) / n, 2)})
 
     n = len(df)
-    for c in ("died", "unit_name", "qclif", "age_at_admission", "cci", "sofa"):
+    for c in ["died", "unit_name", "qclif", "age_at_admission", "cci", "sofa"] + MODEL_COVARIATES:
         add("covariate", c, df[c].notna().sum(), n)
     # death_dttm is legitimately absent for survivors; report it against decedents only.
     add("covariate", "death_dttm (among died==1)",
         df.loc[df["died"] == 1, "death_dttm"].notna().sum(), int((df["died"] == 1).sum()))
+
+    # Table 1 variables, not model covariates -- reported separately so the group column does not
+    # imply they enter the adjustment.
+    for c in ("sex_category", "race_category", "ethnicity_category"):
+        add("demographic", c, df[c].notna().sum(), n)
 
     for c in comp:
         add("sofa_component", c, sofa[c].notna().sum(), n)
@@ -138,7 +164,7 @@ def missingness_report(df, sofa, comp, out, log=print):
     rep.to_csv(out / "missingness_report.csv", index=False)
 
     log("\n[missingness] covariates")
-    for r in rep[rep.group == "covariate"].itertuples():
+    for r in rep[rep.group.isin(["covariate", "demographic"])].itertuples():
         log(f"    {r.variable:<28} missing {r.n_missing:>6,}/{r.n:<7,} ({r.pct_missing:>5.2f}%)")
 
     log("\n[missingness] SOFA components — a MISSING component is scored 0 (normal) in the total")
@@ -231,18 +257,46 @@ def main() -> int:
     # ---- 4. age and Charlson -------------------------------------------------
     cohort = cohort.rename(columns={"age": "age_at_admission"})
     hd = stage.read_whole_table(cfg, "hospital_diagnosis")
-    cci = clif_io.charlson(hd)
-    cci["hospitalization_id"] = cci["hospitalization_id"].astype(str)
     mp = mapping.copy()
     mp["hospitalization_id"] = mp["hospitalization_id"].astype(str)
     mp["encounter_block"] = attr.norm_block(mp["encounter_block"])
-    cci_block = (cci.merge(mp, on="hospitalization_id")
-                 .groupby("encounter_block")["cci_score"].max().rename("cci"))
-    cohort = cohort.merge(cci_block, on="encounter_block", how="left")
-    cohort["cci"] = cohort["cci"].fillna(0)
+
+    def cci_by_block(diagnoses, name):
+        cci = clif_io.charlson(diagnoses)
+        cci["hospitalization_id"] = cci["hospitalization_id"].astype(str)
+        return (cci.merge(mp, on="hospitalization_id")
+                .groupby("encounter_block")["cci_score"].max().rename(name))
+
+    if POA_COLUMN not in hd.columns:
+        raise AssertionError(f"hospital_diagnosis.{POA_COLUMN} is required for cci_poa")
+    poa = pd.to_numeric(hd[POA_COLUMN], errors="coerce").eq(1).to_numpy()
+    for diagnoses, name in ((hd, "cci"), (hd[poa], "cci_poa")):
+        cohort = cohort.merge(cci_by_block(diagnoses, name), on="encounter_block", how="left")
+        cohort[name] = cohort[name].fillna(0)
     print(f"[covariates] age median {cohort['age_at_admission'].median():.0f}; "
           f"cci median {cohort['cci'].median():.0f} "
-          f"({int((cohort['cci'] == 0).sum()):,} with no coded comorbidity)")
+          f"({int((cohort['cci'] == 0).sum()):,} with no coded comorbidity); "
+          f"cci_poa median {cohort['cci_poa'].median():.0f} "
+          f"({100 * poa.mean():.1f}% of diagnosis rows present on admission)")
+
+    # ---- 4b. case mix at intubation ------------------------------------------
+    blocks = set(cohort["encounter_block"])
+    adt = cov.attach_block(stage.read_whole_table(cfg, "adt"), mp, blocks)
+    cohort["location_at_intubation"] = cov.collapse_location(
+        cov.location_at_intubation(cohort, adt))
+    cohort["procedural_within_24h"] = cov.procedural_within(
+        cohort, adt, cov.PROCEDURAL_HOURS).astype(int)
+    cohort["hours_to_intubation"] = cov.hours_category(
+        cohort["intubation_dttm"], cohort["admission_dttm"])
+    hosp = cov.attach_block(stage.read_whole_table(cfg, "hospitalization"), mp, blocks)
+    cohort["admission_type"] = cov.admission_type(cohort, hosp)
+    cs = stage.read_whole_table(cfg, "code_status")
+    cs = cs[cs["patient_id"].astype(str).isin(set(cohort["patient_id"].astype(str)))]
+    cohort["code_status_before_intubation"] = cov.code_status_before(cohort, cs)
+    cohort["limited_code_status"] = cov.limited_code_status(cohort["code_status_before_intubation"])
+    for c in ("location_at_intubation", "procedural_within_24h", "hours_to_intubation",
+              "admission_type", "limited_code_status"):
+        print(f"       {c}: {cohort[c].value_counts(dropna=False).sort_index().to_dict()}")
 
     # ---- 5. SOFA over the intubation window ---------------------------------
     win = cohort[["encounter_block", "intubation_dttm"]].copy()
@@ -283,13 +337,18 @@ def main() -> int:
 
     extended = (["unit_id", "encounter_block", "hospitalization_id", "intubation_dttm",
                 "admission_dttm", "discharge_dttm", "discharge_category",
-                "icu_hours_in_unit", "icu_hours_total", "n_icus", "sex_category",
+                "icu_hours_in_unit", "icu_hours_total", "n_icus",
+                "sex_category", "race_category", "ethnicity_category",
+                *MODEL_COVARIATES, "code_status_before_intubation",
                 "sofa_total_raw", "sofa_resp_raw", "sofa_n_components", "oxy_source"]
                + comp + sofa_crrt.COMPONENT_VALUES + inputs)
     ext_cols = [c for c in dict.fromkeys(extended) if c in cohort.columns]
-    missing_ext = [c for c in sofa_crrt.COMPONENT_VALUES if c not in cohort.columns]
-    if missing_ext:
-        raise AssertionError(f"component covariates absent from the cohort: {missing_ext}")
+    require_columns(cohort, sofa_crrt.COMPONENT_VALUES, "component covariates")
+    require_columns(cohort, REQUIRED_EXTENDED, "Table 1 demographics")
+    require_columns(cohort, MODEL_COVARIATES, "model covariates")
+    nulls = {c: int(cohort[c].isna().sum()) for c in MODEL_COVARIATES if cohort[c].isna().any()}
+    if nulls:
+        raise AssertionError(f"model covariates must be complete by construction: {nulls}")
     cohort[COLUMNS + ext_cols].to_parquet(
         out / "analysis_dataset_extended.parquet", index=False)
 
@@ -313,6 +372,19 @@ def main() -> int:
                                           for c in comp},
                  "all_components_present": int(cohort[comp].notna().all(axis=1).sum()),
                  "note": "a missing subscore is summed as 0, i.e. as normal"},
+        "model_covariates": {
+            "cci_poa": f"Charlson from hospital_diagnosis rows with {POA_COLUMN} == 1",
+            "hours_to_intubation": dict(zip(cov.HOURS_LABELS,
+                                            [str(b) for b in cov.HOURS_BINS[1:]])),
+            "location_at_intubation": f"adt.location_category spanning intubation; kept "
+                                      f"{list(cov.LOCATION_KEPT)}, no covering row -> "
+                                      f"{cov.LOCATION_UNKNOWN}, rest -> {cov.LOCATION_OTHER}",
+            "procedural_within_24h": f"procedural ADT stay overlapping the "
+                                     f"{cov.PROCEDURAL_HOURS} h before intubation",
+            "limited_code_status": f"last code_status order at or before intubation in "
+                                   f"{sorted(cov.LIMITED_CODE)}",
+            "admission_type": "admission_type_category of the block's first hospitalization",
+        },
         "complete_cases": int(len(complete)),
     }, indent=2, default=str))
 

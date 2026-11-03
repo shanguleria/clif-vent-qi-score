@@ -1,7 +1,8 @@
 # 08_outcome_model.R -- unit ventilator-QI score vs in-hospital mortality
 #
-# Input:  output/<site>/intermediate_phi/analysis/analysis_dataset.parquet
-# 
+# Input:  output/<site>/intermediate_phi/analysis/analysis_dataset_extended.parquet
+#         output/<site>/final_no_phi/unit_panel.parquet
+#
 # Output: output/<site>/final_no_phi/08_outcome_model/
 
 library(arrow)
@@ -12,9 +13,37 @@ site <- Sys.getenv("CLIF_SITE", "uchicago")
 out  <- file.path("output", site, "final_no_phi", "08_outcome_model")
 dir.create(out, recursive = TRUE, showWarnings = FALSE)
 
-df <- read_parquet(file.path("output", site, "intermediate_phi", "analysis",
-                             "analysis_dataset.parquet"))
+df <- as.data.frame(read_parquet(
+  file.path("output", site, "intermediate_phi", "analysis",
+            "analysis_dataset_extended.parquet")))
 df <- df[complete.cases(df[, c("died", "qclif", "sofa", "cci", "age_at_admission")]), ]
+
+# The primary adjustment. ADJUST_BASE is the original specification, kept as a sensitivity row and
+# as the first covariate block; both vectors name model terms, so age enters as age_z.
+ADJUST_BASE <- c("sofa", "cci", "age_z")
+ADJUST <- c("sofa", "cci_poa", "age_z", "hours_to_intubation", "location_at_intubation",
+            "procedural_within_24h", "limited_code_status", "admission_type")
+ADJUST_LABEL <- paste("age, present-on-admission Charlson comorbidity index, SOFA,",
+                      "admission-to-intubation time, location at intubation, a procedural",
+                      "stay in the 24 h before intubation, limited code status and admission type")
+REF <- c(hours_to_intubation = "0-24 h", location_at_intubation = "icu", admission_type = "ed")
+HOURS_LEVELS <- c("<= 0 h", "0-24 h", "24-72 h", "72 h-7 d", "> 7 d")
+SOFA_COMPONENTS <- c(sofa_resp = "Respiratory", sofa_coag = "Coagulation",
+                     sofa_liver = "Liver", sofa_cv_97 = "Cardiovascular",
+                     sofa_cns = "Central nervous system", sofa_renal = "Renal")
+raw_cols <- function(terms) sub("^age_z$", "age_at_admission", terms)
+stopifnot(!anyNA(df[, raw_cols(ADJUST)]))
+for (v in names(REF)) df[[v]] <- relevel(factor(df[[v]]), ref = REF[[v]])
+
+# score_full and the per-score denominator floors live on the panel, not the analysis dataset.
+# Indexed rather than merged so row order is untouched and the fitted models cannot move.
+panel <- as.data.frame(read_parquet(
+  file.path("output", site, "final_no_phi", "unit_panel.parquet")))
+prow <- match(df$unit_name, panel$unit_name)
+stopifnot(!anyNA(prow))
+# The exposure must BE the panel's score, not a copy that has drifted from it.
+stopifnot(isTRUE(all.equal(df$qclif, panel$score_core[prow])))
+for (v in c("score_full", "score_core_low", "score_full_low")) df[[v]] <- panel[[v]][prow]
 
 # Rescale for interpretability and convergence
 df$age_z <- as.numeric(scale(df$age_at_admission))
@@ -22,9 +51,12 @@ unit_q <- df$qclif[!duplicated(df$unit_name)]
 df$qclif_centered <- df$qclif - mean(unit_q)   # per 1-point increase
 
 ctrl <- glmerControl(optimizer = "bobyqa")
-m1 <- glmer(died ~ 1 + (1 | unit_name), data = df, family = binomial, control = ctrl)
-m2 <- update(m1, . ~ . + sofa + cci + age_z)
-m3 <- update(m2, . ~ . + qclif_centered)
+fit <- function(terms, d = df)
+  glmer(reformulate(c(terms, "(1 | unit_name)"), response = "died"),
+        data = d, family = binomial, control = ctrl)
+m1 <- fit("1")
+m2 <- fit(ADJUST)
+m3 <- fit(c(ADJUST, "qclif_centered"))
 
 anova(m1, m2, m3)
 summary(m3)
@@ -60,8 +92,8 @@ write.csv(cmp[, c("model", setdiff(names(cmp), "model"))],
 #        higher unit over lower. Directly comparable to a fixed-effect OR.
 vc <- function(m) as.numeric(VarCorr(m)$unit_name)
 icc <- data.frame(model = c("m1", "m2", "m3"),
-                  adjustment = c("none", "age + cci + sofa",
-                                 "age + cci + sofa + qclif"),
+                  adjustment = c("none", "primary adjustment",
+                                 "primary adjustment + qclif"),
                   between_unit_var = sapply(list(m1, m2, m3), vc))
 icc$sd_logodds <- sqrt(icc$between_unit_var)
 icc$or_per_sd_unit <- exp(icc$sd_logodds)
@@ -103,7 +135,7 @@ u   <- re[, 1]
 se  <- sqrt(as.numeric(attr(re, "postVar")))
 
 # Adjusted predicted in-hospital survival for a standard patient using cohort-mean covariate profile
-# plus each unit's random intercept. 
+# plus each unit's random intercept.
 eta_fixed <- sum(colMeans(model.matrix(m2)) * fixef(m2))
 surv <- function(eta) 1 / (1 + exp(eta))       # P(survive) = 1 - plogis(eta_death)
 
@@ -130,9 +162,212 @@ cat_tab <- cat_tab[order(cat_tab$survival), ]
 write.csv(cat_tab, file.path(out, "unit_effects.csv"), row.names = FALSE)
 
 
-# ---- Figure ------------------------------------------------------------------
+# ---- Table 1 -----------------------------------------------------------------
+
+# Strata are tertiles of the UNITS ranked by score, not of the patient distribution. The score
+# is lumpy enough across this few units that a patient-weighted cut can leave a stratum holding
+# a single ICU, which would publish that ICU's case mix in a column of its own.
+TERTILES <- c("Low qCLIF", "Middle qCLIF", "High qCLIF")
+uq <- sort(unique(df$qclif))
+stopifnot(length(uq) >= length(TERTILES))
+df$tertile <- factor(
+  TERTILES[cut(seq_along(uq), breaks = length(TERTILES), labels = FALSE)][match(df$qclif, uq)],
+  levels = TERTILES)
+stopifnot(all(table(df$tertile) > 0))
+
+idx <- c(list(Overall = rep(TRUE, nrow(df))),
+         setNames(lapply(TERTILES, function(t) df$tertile == t), TERTILES))
+hdr <- vapply(names(idx), function(nm)
+  sprintf("%s  N = %s", nm, format(sum(idx[[nm]]), big.mark = ",")), "")
+
+fmt_iqr <- function(x, dec) {
+  x <- x[!is.na(x)]
+  if (!length(x)) return("NA")
+  q <- quantile(x, c(0.25, 0.5, 0.75), names = FALSE)
+  f <- paste0("%.", dec, "f")
+  sprintf(paste0(f, " (", f, ", ", f, ")"), q[2], q[1], q[3])
+}
+fmt_npct <- function(k, n) if (n > 0) sprintf("%s (%.0f%%)", format(k, big.mark = ","),
+                                              100 * k / n) else "NA"
+fmt_p <- function(p) {
+  if (is.na(p)) return("NA")
+  if (p < 0.001) return("<0.001")
+  if (p < 0.01) sprintf("%.3f", p) else sprintf("%.2f", p)
+}
+p_cont <- function(v) {
+  ok <- !is.na(v)
+  g <- droplevels(df$tertile[ok])
+  if (nlevels(g) < 2) return(NA_real_)
+  kruskal.test(v[ok], g)$p.value
+}
+p_cat <- function(f) {
+  tb <- table(f, df$tertile)
+  tb <- tb[rowSums(tb) > 0, , drop = FALSE]
+  if (nrow(tb) < 2 || ncol(tb) < 2) return(NA_real_)
+  suppressWarnings(chisq.test(tb)$p.value)
+}
+# An absent category is reported, never folded into "Other" -- a silent fold would make a
+# charting gap indistinguishable from a real level.
+as_level <- function(x) {
+  lv <- if (is.factor(x)) levels(x) else NULL
+  x <- as.character(x)
+  x[trimws(x) == ""] <- NA
+  f <- if (is.null(lv)) factor(x) else factor(x, levels = lv)
+  if (anyNA(x)) {
+    f <- addNA(f)
+    levels(f)[is.na(levels(f))] <- "Unknown"
+  }
+  f
+}
+
+t1 <- list()
+emit <- function(label, cells, p) t1[[length(t1) + 1]] <<- c(label, unname(cells), p)
+bold <- function(s) sprintf("__%s__", s)
+blank <- rep("", length(idx))
+
+row_cont <- function(label, v, dec = 0, p = p_cont(v), sub = FALSE)
+  emit(if (sub) label else bold(label),
+       vapply(idx, function(i) fmt_iqr(v[i], dec), ""), fmt_p(p))
+
+row_bin <- function(label, b)
+  emit(bold(label), vapply(idx, function(i) fmt_npct(sum(b[i]), sum(i)), ""),
+       fmt_p(p_cat(factor(b))))
+
+row_cat <- function(label, x) {
+  f <- as_level(x)
+  emit(bold(label), blank, fmt_p(p_cat(f)))
+  for (lv in levels(f))
+    emit(lv, vapply(idx, function(i) fmt_npct(sum(f[i] == lv), sum(i)), ""), "")
+}
+
+row_cont("Age at admission, years", df$age_at_admission)
+row_cat("Sex", df$sex_category)
+row_cat("Race", df$race_category)
+row_cat("Ethnicity", df$ethnicity_category)
+row_cont("Charlson comorbidity index", df$cci)
+row_cont("Charlson comorbidity index, present on admission", df$cci_poa)
+row_cont("SOFA at intubation", df$sofa)
+emit(bold("SOFA components"), blank, "")
+for (col in names(SOFA_COMPONENTS)) row_cont(SOFA_COMPONENTS[[col]], df[[col]], sub = TRUE)
+row_cat("Admission type", df$admission_type)
+row_cat("Admission to intubation", factor(df$hours_to_intubation, levels = HOURS_LEVELS))
+row_cat("Location at intubation", df$location_at_intubation)
+row_bin("Procedural stay in the 24 h before intubation", df$procedural_within_24h == 1)
+row_bin("Limited code status before intubation", df$limited_code_status == 1)
+row_cont("Hours in the attributed ICU", df$icu_hours_in_unit, dec = 1)
+row_bin("Cared for in more than one ICU", !is.na(df$n_icus) & df$n_icus > 1)
+# Tautological against strata defined by the score itself, so no p-value is reported.
+row_cont("Ventilator QI score (score_core)", df$qclif, dec = 1, p = NA_real_)
+row_bin("Died in hospital", df$died == 1)
+row_cat("Discharge category", df$discharge_category)
+
+t1df <- as.data.frame(do.call(rbind, t1), stringsAsFactors = FALSE)
+names(t1df) <- c("Characteristic", hdr, "p-value")
+write.csv(t1df, file.path(out, "table1.csv"), row.names = FALSE)
+
+ter <- unique(df[, c("unit_id", "qclif", "tertile")])
+ter$n <- as.integer(table(df$unit_id)[ter$unit_id])
+ter <- ter[order(ter$qclif), ]
+write.csv(ter, file.path(out, "table1_tertiles.csv"), row.names = FALSE)
+
+
+# ---- Sensitivity analyses ----------------------------------------------------
+
+# Each variant is refit standalone, with its OWN null model, so var_explained compares like
+# with like; a subset that loses a whole unit changes the baseline it should be judged against.
+# between_unit_var_adjusted is from the covariates-only model, so it shows what the covariates
+# explain before the score is added; between_unit_var is with the score in.
+fit_one <- function(id, desc, d, exposure = "qclif", adjust = ADJUST) {
+  d <- droplevels(d[complete.cases(d[, c("died", exposure, raw_cols(adjust))]), ])
+  d$age_z <- as.numeric(scale(d$age_at_admission))
+  ex <- d[[exposure]]
+  d$expo <- ex - mean(ex[!duplicated(d$unit_name)])
+  n0 <- fit("1", d)
+  na <- fit(adjust, d)
+  nf <- fit(c(adjust, "expo"), d)
+  ci <- confint(nf, method = "Wald", parm = "beta_")
+  v <- vc(nf)
+  data.frame(
+    analysis = id, description = desc,
+    n_patients = nrow(d), n_deaths = sum(d$died), n_units = length(unique(d$unit_name)),
+    qclif_or_per_point = exp(unname(fixef(nf)["expo"])),
+    lo = exp(ci["expo", 1]), hi = exp(ci["expo", 2]),
+    p = coef(summary(nf))["expo", "Pr(>|z|)"],
+    between_unit_var_adjusted = vc(na),
+    var_explained_by_covariates = 1 - vc(na) / vc(n0),
+    between_unit_var = v,
+    mor = exp(sqrt(2 * v) * qnorm(0.75)),
+    var_explained_vs_null = 1 - v / vc(n0),
+    aic_adjusted = AIC(na),
+    row.names = NULL)
+}
+
+swap <- function(terms, from, to) unlist(lapply(terms, function(term) if (term == from) to else term))
+
+# A missing subscore enters as 0, the convention the SOFA total already applies.
+for (col in names(SOFA_COMPONENTS)) df[[paste0(col, "_0")]] <- ifelse(is.na(df[[col]]), 0, df[[col]])
+df$sofa_no_liver <- df$sofa - df$sofa_liver_0
+sens <- rbind(
+  fit_one("primary", "primary adjustment, score_core, all complete cases", df),
+  fit_one("original_adjustment", "age, cci and SOFA only (the original specification)",
+          df, adjust = ADJUST_BASE),
+  fit_one("sofa_components", "the six SOFA subscores in place of the total, absent = 0",
+          df, adjust = swap(ADJUST, "sofa", paste0(names(SOFA_COMPONENTS), "_0"))),
+  fit_one("score_full", "exposure includes proning (score_full)", df, exposure = "score_full"),
+  fit_one("above_floor", "units meeting every score_core denominator floor",
+          df[!df$score_core_low, ]),
+  fit_one("single_icu", "patients cared for in exactly one ICU",
+          df[!is.na(df$n_icus) & df$n_icus == 1, ]),
+  fit_one("sofa_minus_liver", "SOFA excluding the liver component",
+          df, adjust = swap(ADJUST, "sofa", "sofa_no_liver")))
+# Stated outright, so a restriction that happens to exclude nobody on this site's data reads as
+# vacuous rather than as applied.
+sens$n_excluded <- sens$n_patients[1] - sens$n_patients
+SENS_COLS <- c("analysis", "description", "n_patients", "n_excluded", "n_deaths", "n_units",
+               "qclif_or_per_point", "lo", "hi", "p", "between_unit_var_adjusted",
+               "var_explained_by_covariates", "between_unit_var", "mor",
+               "var_explained_vs_null", "aic_adjusted")
+write.csv(sens[, SENS_COLS], file.path(out, "sensitivity_analyses.csv"), row.names = FALSE)
+
+# The primary row refits the published specification; if it has drifted from m3 the two
+# exports disagree and neither can be quoted.
+stopifnot(isTRUE(all.equal(sens$qclif_or_per_point[1],
+                           exp(unname(fixef(m3)["qclif_centered"])), tolerance = 1e-6)))
+
+
+# ---- Covariate blocks --------------------------------------------------------
+
+# Cumulative, in a fixed prespecified order, from the original specification to the primary one.
+# Read for how each block moves the between-unit variance and the score's OR; with this few units
+# the order is a presentation choice, not a test.
+BLOCKS <- list(
+  original                = ADJUST_BASE,
+  poa_charlson            = swap(ADJUST_BASE, "cci", "cci_poa"),
+  intubation_setting      = c(swap(ADJUST_BASE, "cci", "cci_poa"), "hours_to_intubation",
+                              "location_at_intubation", "procedural_within_24h"),
+  limited_code_status     = c(swap(ADJUST_BASE, "cci", "cci_poa"), "hours_to_intubation",
+                              "location_at_intubation", "procedural_within_24h",
+                              "limited_code_status"),
+  admission_type          = ADJUST)
+# The first step swaps cci for cci_poa; every later step only adds.
+added <- BLOCKS[-1]
+stopifnot(setequal(BLOCKS[[1]], ADJUST_BASE),
+          setequal(BLOCKS[[2]], swap(ADJUST_BASE, "cci", "cci_poa")),
+          all(mapply(function(a, b) all(a %in% b), added[-length(added)], added[-1])),
+          setequal(BLOCKS[[length(BLOCKS)]], ADJUST))
+blocks <- do.call(rbind, lapply(names(BLOCKS), function(b)
+  fit_one(b, paste(BLOCKS[[b]], collapse = " + "), df, adjust = BLOCKS[[b]])))
+blocks <- blocks[, setdiff(SENS_COLS, "n_excluded")]
+names(blocks)[names(blocks) == "analysis"] <- "block"
+write.csv(blocks, file.path(out, "covariate_blocks.csv"), row.names = FALSE)
+stopifnot(isTRUE(all.equal(blocks$qclif_or_per_point[nrow(blocks)],
+                           sens$qclif_or_per_point[1], tolerance = 1e-6)))
+
+
+# ---- Figures -----------------------------------------------------------------
 
 INK <- "#0b0b0b"; GRIDLINE <- "#e1e0d9"; PAPER <- "#fcfcfb"; DIED <- "#8c2f18"
+BAND <- "#dcdbd4"
 
 # Ordered by unadjusted mortality
 unit_tab$label <- sprintf("%s\nn = %s", unit_tab$unit_name,
@@ -160,7 +395,7 @@ ggsave(file.path(out, "deaths_by_unit.png"), p, width = 7.5, height = 4.5, dpi =
 # Caterpillar plot
 
 # ICU units ordered along the X axis, the estimate and its 95% interval on Y
-# Colored by whether the unit is distinguishable from the average. 
+# Colored by whether the unit is distinguishable from the average.
 GRP_COLOURS <- c("Below average"       = "#93331a",
                  "Not distinguishable" = "#0b0b0b",
                  "Above average"       = "#35649f")
@@ -192,6 +427,50 @@ cp <- ggplot(cat_tab, aes(x = label, y = survival, colour = group)) +
 
 ggsave(file.path(out, "unit_caterpillar.png"), cp, width = 7.5, height = 4.5, dpi = 300)
 
+
+# Exposure-response: what the model says the score itself buys, as opposed to the
+# caterpillar's per-unit intercepts. Covariates held at the cohort mean, random effect 0.
+qs <- seq(min(unit_q), max(unit_q), length.out = 200)
+xbar <- colMeans(model.matrix(m3))
+newX <- matrix(xbar, nrow = length(qs), ncol = length(xbar), byrow = TRUE,
+               dimnames = list(NULL, names(xbar)))
+newX[, "qclif_centered"] <- qs - mean(unit_q)
+eta <- as.numeric(newX %*% fixef(m3))
+# Fixed-effect uncertainty only: a level-2 slope estimated from as many points as there are
+# units, so this band is a lower bound on the true uncertainty.
+se_eta <- sqrt(rowSums((newX %*% as.matrix(vcov(m3))) * newX))
+curve <- data.frame(qclif = qs, fit = 100 * plogis(eta),
+                    lo = 100 * plogis(eta - 1.96 * se_eta),
+                    hi = 100 * plogis(eta + 1.96 * se_eta))
+
+# Units are placed with m2's conditional modes, i.e. the model that has NOT seen the score,
+# so the points are not fitted to the line they are plotted against.
+pts <- data.frame(qclif = cat_tab$qclif, fit = 100 - cat_tab$survival, n = cat_tab$n)
+
+er <- ggplot(curve, aes(x = qclif, y = fit)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), fill = BAND) +
+  geom_line(colour = INK, linewidth = 0.7) +
+  geom_point(data = pts, aes(size = n), colour = DIED, alpha = 0.85) +
+  scale_size_area(max_size = 8, name = "Patients per ICU",
+                  labels = function(x) format(x, big.mark = ",", trim = TRUE)) +
+  scale_y_continuous(labels = function(x) sprintf("%.0f%%", x)) +
+  labs(x = "Ventilator QI score (score_core, 0-100)",
+       y = "Adjusted in-hospital mortality, standard patient") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom",
+        legend.background = element_rect(fill = PAPER, colour = INK, linewidth = 0.3),
+        legend.margin = margin(t = 5, r = 8, b = 5, l = 8),
+        legend.box.margin = margin(t = 4),
+        legend.text = element_text(colour = INK, size = 9),
+        legend.title = element_text(colour = INK, size = 9),
+        axis.title = element_text(colour = INK),
+        axis.text = element_text(colour = INK),
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_line(colour = GRIDLINE, linewidth = 0.4),
+        plot.background = element_rect(fill = PAPER, colour = NA))
+
+ggsave(file.path(out, "exposure_response.png"), er, width = 7.5, height = 4.5, dpi = 300)
+
 writeLines(c(
   "# Figure captions",
   "",
@@ -208,7 +487,7 @@ writeLines(c(
   "",
   "**unit_caterpillar.png** — Caterpillar plot after Parker et al, JAMA 2019;322:1789,",
   "Figure 2. Conditional modes of the ICU random intercept from the adjusted model",
-  "(age, Charlson comorbidity index and SOFA), expressed as an odds ratio for survival",
+  sprintf("(%s), expressed as an odds ratio for survival", ADJUST_LABEL),
   "relative to the average ICU, with 95% intervals from the conditional standard",
   "errors, converted to the predicted probability of surviving to discharge for a",
   sprintf("patient at the cohort-mean covariate profile (reference line, the average unit, %.1f%%).",
@@ -217,7 +496,46 @@ writeLines(c(
   sprintf("ordered by point estimate; n per unit ranges %s to %s. The intervals are",
           format(min(cat_tab$n), big.mark = ","), format(max(cat_tab$n), big.mark = ",")),
   "comparative (conditional on the estimated between-unit variance), so they address",
-  "whether units differ from the average."
+  "whether units differ from the average.",
+  "",
+  "**exposure_response.png** — Adjusted probability of in-hospital death as a function of",
+  sprintf("the unit ventilator QI score (score_core), from the full model (%s,", ADJUST_LABEL),
+  "and the score, with a random ICU intercept). The line holds",
+  "every covariate at its cohort mean and the random effect at zero; the band is the 95%",
+  "interval from the fixed-effect covariance alone. Points are the individual ICUs, placed",
+  "at their own score and at the adjusted mortality implied by the conditional mode from the",
+  "model WITHOUT the score, so they are not fitted to the line; point area is proportional to",
+  sprintf("the number of patients (range %s to %s).",
+          format(min(pts$n), big.mark = ","), format(max(pts$n), big.mark = ",")),
+  sprintf("The score is a unit-level (level-2) exposure taking %d distinct values, so the slope is",
+          length(unit_q)),
+  "identified by that many points however many patients contribute; the band reflects",
+  "fixed-effect uncertainty only and should be read as a lower bound.",
+  "",
+  "**table1.csv** — Patient characteristics at the first qualifying IMV hospitalisation,",
+  "overall and by tertile of the unit ventilator QI score. Tertiles are cuts of the ICUs",
+  "ranked by score rather than of the patient distribution, so no stratum can consist of a",
+  "single ICU; strata therefore differ in size. The composition of each tertile, with its",
+  "score range and patient count, is given in table1_tertiles.csv using anonymised unit",
+  "labels. Continuous",
+  "variables are median (Q1, Q3), categorical are n (%), and an absent value is reported as",
+  "its own Unknown level rather than folded into another category. p-values are",
+  "Kruskal-Wallis across the three tertiles for continuous variables and chi-square for",
+  "categorical; they treat patients as independent and therefore IGNORE clustering within",
+  "ICUs, so they are descriptive only. No p-value is reported for the score itself, which",
+  "defines the strata. Cells are NOT small-cell suppressed: some categorical levels hold very",
+  "few patients, so the table needs a suppression pass before it leaves the site.",
+  "",
+  "**covariate_blocks.csv** — Cumulative covariate blocks, from the original adjustment (age,",
+  "Charlson comorbidity index, SOFA) to the primary one, in a prespecified order: the",
+  "present-on-admission Charlson index in place of the all-diagnosis one; then",
+  "admission-to-intubation time, location at intubation and a procedural stay in the 24 h",
+  "before intubation; then limited code status (a DNR-type order at or before intubation;",
+  "Full and no recorded order are one level, because recording varies by year and unit);",
+  "then admission type. Each row gives the between-unit variance with the covariates alone",
+  "and the share of the unadjusted variance they remove, then the score's odds ratio per point",
+  "and the between-unit variance with the score added. With this few units the order is a",
+  "presentation choice, not a test."
 ), file.path(out, "captions.md"))
 
 cat(sprintf("\nWrote %s\n", out))

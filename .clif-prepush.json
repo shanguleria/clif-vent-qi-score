@@ -1,0 +1,5 @@
+{
+  "small_cell_threshold": 11,
+  "redact_site_names": [],
+  "allow_data_paths": []
+}

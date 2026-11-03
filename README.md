@@ -84,6 +84,15 @@ CLIF **spec version 2.1**. The cohort and all four metrics are built from the ta
 | `sbt` | `respiratory_support.pressure_support_set`, `mode_category` in {`pressure support/cpap`, `blow by`}; `patient_assessments.assessment_category` = `sbt_delivery_pass_fail`; vasoactive `med_category` values for the norepinephrine-equivalent dose |
 | `prone_12h` | `labs.lab_category` = `po2_arterial`; `position.position_category` = `prone`; `adt.location_category` = `procedural` (recent-OR exclusion) |
 
+**Outcome model covariates** (stage 7; built in `common/covariates.py`)
+
+| Table | Fields / categorical values |
+|---|---|
+| `hospital_diagnosis` | `hospitalization_id`, `diagnosis_code`, `diagnosis_code_format` = `icd10cm` (Charlson), **`poa_present`** = 1 (present-on-admission Charlson; required) |
+| `adt` | `location_category` spanning intubation (`ed` / `icu` / `procedural` kept, others pooled); `procedural` in the 24 h before intubation |
+| `hospitalization` | `admission_type_category` |
+| `code_status` | `patient_id`, `start_dttm`, `code_status_category`. Limited = DNR, DNAR, UDNR, DNR/DNI, DNAR/DNI, AND; not limited = Full, Presume Full, none recorded. Any other value (e.g. `Other`) stops stage 7 until it is classified in `common/covariates.py` |
+
 > **`location_name` is optional in CLIF 2.1** and is free text with no permissible-value list, so it
 > is site-specific and may be absent entirely. Stage 0 checks for it and fails with a clear message
 > rather than silently falling back. Stage 0 reports how many ICU rows carry a name and how many
@@ -168,7 +177,14 @@ Stage 0 re-diffs `definitions/` against the pinned upstream commit and fails lou
 | `output/<site>/final_no_phi/unit_period_panel.csv` | Secondary, one row per ICU x period | Yes, site-internal |
 | `output/<site>/final_no_phi/*_anonymized.csv` | Both, with `location_name` stripped (`Unit 1..n` only) | **Yes — use these externally** |
 | `output/<site>/final_no_phi/verification.json` | Equivalence check results | Yes |
+| `output/<site>/final_no_phi/08_outcome_model/` | Model coefficients, ICC/MOR, per-unit effects, covariate blocks, sensitivity analyses, Table 1, three figures and `captions.md` | Site-internal; Table 1 still needs a small-cell pass |
+| `output/<site>/final_no_phi/07b_covariate_probe/` | Coverage and crude mortality of candidate case-mix covariates, overall, by `unit_id` and by intubation year; counts below `small_cell_threshold` (`.clif-prepush.json`) suppressed | Site-internal |
+| `output/<site>/final_no_phi/logs/` | Per-step logs, aggregate only | Yes |
 | `output/<site>/run_timings.csv` | Per-stage wall clock + git SHA | Yes |
+
+Everything under `08_outcome_model/` labels ICUs as `Unit 1..n` except `unit_summary.csv`,
+`unit_effects.csv` and the two per-unit figures, which carry `location_name` for site-internal
+reading. Anonymise those before they go anywhere external.
 
 ---
 
@@ -189,9 +205,17 @@ renv::restore()
 ```
 
 The compute stack is **pinned exactly** — `clif-dashboards` at a commit, plus `clifpy==2.1.0`,
-`pandas==2.3.3`, `numpy==2.5.4`, `pyarrow==26.0.0`, `duckdb==1.5.6` — because every site must
-compute identical numbers. The `clif-dashboards` pin is a *definitional* pin, not merely a
-dependency pin: bumping it can change what the metrics mean, so re-run stage 5 after any bump.
+`pandas==2.3.3`, `numpy==2.5.4`, `pyarrow==26.0.0`, `duckdb==1.5.6`, `polars==1.44.2` — because
+every site must compute identical numbers. The `clif-dashboards` pin is a *definitional* pin, not
+merely a dependency pin: bumping it can change what the metrics mean, so re-run stage 5 after any
+bump.
+
+Stage 7 computes classic SOFA with the calculator from
+[`CLIF-epidemiology-of-CRRT`](https://github.com/Common-Longitudinal-ICU-data-Format/CLIF-epidemiology-of-CRRT),
+vendored verbatim under `vendor/crrt_sofa/` (Apache-2.0, license included), so no CRRT checkout
+is needed. `vendor/crrt_sofa/SOURCE` records the upstream commit and a sha256 per file, and
+`tests/test_vendor_crrt.py` fails if any vendored byte changes. To update, re-copy from a new
+commit and replace the hashes and SHA together.
 
 ---
 
@@ -211,6 +235,13 @@ dependency pin: bumping it can change what the metrics mean, so re-run stage 5 a
 .\run_scores.ps1 -Site uchicago
 .\run_scores.ps1 -Site uchicago -Rebuild
 .\run_scores.ps1 -Site uchicago -RequireStage
+```
+
+The outcome model is a separate R step, run after the Python pipeline. It reads the site from
+`CLIF_SITE` (default `uchicago`):
+
+```bash
+Rscript code/08_outcome_model.R
 ```
 
 Tests (synthetic frames only, no CLIF data):
@@ -252,12 +283,14 @@ every run.
 | 3 | `code/03_build_panel.py` | `panel/contributions.parquet` + `final_no_phi/{unit,unit_period}_panel.{csv,parquet}` at both grains |
 | 4 | `code/04_exposure_assignment.py` | `exposure/exposure_{unit,unit_period}_{long,primary}.parquet` — per-patient exposure |
 | 5 | `code/05_verify_equivalence.py` | `final_no_phi/verification.json` — cross-run equivalence vs the dashboard's persisted output |
-| 7 | `code/07_analysis_dataset.py` | `analysis/analysis_dataset.{csv,parquet}` — one row per patient for the outcome model |
+| 7 | `code/07_analysis_dataset.py` | `analysis/analysis_dataset.{csv,parquet}` — one row per patient for the outcome model, plus `_extended` with demographics, the case-mix covariates, SOFA components and ICU-stay diagnostics |
+| 7b | `code/07b_covariate_probe.py` | `final_no_phi/07b_covariate_probe/covariate_coverage.csv` + `logs/07b_covariate_probe.log` — on demand: coverage of candidate covariates (location at intubation, recent procedural stay, admission type, pre-intubation code status, admission-to-intubation time, Charlson conditions with and without present-on-admission) in the model sample |
 | 6 | `code/06_compare_tiers.py` | `tier_comparison/` — on demand, proves a cold build reproduces the cached-tier panel exactly |
-| 8 | `code/08_outcome_model.R` | the outcome model (R) — run interactively after the Python pipeline |
+| 8 | `code/08_outcome_model.R` | `final_no_phi/08_outcome_model/` — the multilevel outcome model (R): coefficients, ICC/MOR, per-unit effects, cumulative covariate blocks, Table 1, sensitivity analyses, three figures. Run after the Python pipeline |
 
-Stages 0-5 and 7 run on every build via the runner. Stage 6 is a verification tool invoked
-manually around a `--rebuild` run:
+Stages 0-5 and 7 run on every build via the runner. Stage 7b is a diagnostic, run on demand after
+stage 7 (`.venv/bin/python code/07b_covariate_probe.py --site uchicago`). Stage 6 is a
+verification tool invoked manually around a `--rebuild` run:
 
 ```bash
 .venv/bin/python code/06_compare_tiers.py --site uchicago --snapshot
@@ -285,18 +318,28 @@ clif-vent-qi-score/
 ├── common/
 │   ├── cohort_source.py        # stage-cache validation / cold upstream build / hard fail
 │   ├── attribution.py          # ICU intervals by location_name; hour + day attribution
+│   ├── covariates.py           # case-mix covariates anchored at intubation; small-cell suppression
+│   ├── sofa_crrt.py            # classic SOFA via the vendored calculator, waterfall respiratory
+│   ├── oxygenation.py          # P/F with S/F fallback for the respiratory subscore
 │   └── scoring.py              # pooled rates, composite, floor flags
-├── code/                       # 00..07 Python, each standalone-runnable
+├── vendor/crrt_sofa/           # CRRT classic SOFA calculator, verbatim; SOURCE = commit + sha256
+│   ├── code/                   #   sofa_calculator.py, outlier_utils.py
+│   ├── config/                 #   outlier_config.json
+│   └── LICENSE                 #   Apache-2.0
+├── code/                       # 00..07b Python, each standalone-runnable
 │   └── 08_outcome_model.R      #   the outcome model (R)
 ├── tests/                      # synthetic frames, no CLIF data
 │   ├── test_scoring.py         #   pooled rates, composite, grain, attribution
 │   ├── test_cohort_source.py   #   stage-cache completeness + decision matching
+│   ├── test_analysis_dataset.py#   the extended export cannot lose a column silently
+│   ├── test_covariates.py      #   intubation-anchored covariates + suppression
+│   ├── test_vendor_crrt.py     #   vendored SOFA calculator is byte-identical to its pin
 │   └── test_phi_gate.py        #   the shareable-output identifier gate actually fires
 ├── docs/METHODS.md             # definitions, deviations, known caveats
 └── output/<site>/              # gitignored
     ├── intermediate_phi/       #   row-level — never shared
     ├── upstream_build/         #   stage cache from a cold build — never shared
-    └── final_no_phi/           #   the panel + verification
+    └── final_no_phi/           #   the panel, verification, model outputs, logs/
 ```
 
 ---

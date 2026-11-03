@@ -52,6 +52,13 @@ def load_composite() -> dict:
 
 
 @lru_cache(maxsize=None)
+def small_cell_threshold() -> int:
+    """The pre-push hook's threshold, so suppression at write time and the push-time gate agree.
+    No fallback: a missing file must not quietly change what gets suppressed."""
+    return int(json.loads((ROOT / ".clif-prepush.json").read_text())["small_cell_threshold"])
+
+
+@lru_cache(maxsize=None)
 def source_info() -> dict:
     """Pinned upstream provenance recorded in definitions/SOURCE."""
     return yaml.safe_load((DEFINITIONS / "SOURCE").read_text())
