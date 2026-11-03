@@ -1,6 +1,4 @@
 {
-  "_comment": "Pooled profile for code/07c_pool_sites.py. Copy to sites/pooled.json (gitignored). `members` are site profile names whose stages 0-7 have run on this machine; their order sets the anonymized letters (first = Site A). No data_path: the pooled profile reads only the members' stage-7 outputs.",
-  "site_id": "pooled",
-  "clif_version": "2.1.0",
+  "_comment": "Pooled profile for code/07c_pool_sites.py. Copy to sites/pooled.json (gitignored), or let ./run_pooled.sh --members a,b,c write it. `members` are site profile names whose stages 0-7 have run on this machine; their order sets the anonymized letters (first = Site A). Nothing else is read: the pooled run uses only the members' stage-7 outputs.",
   "members": ["site_one", "site_two", "site_three"]
 }

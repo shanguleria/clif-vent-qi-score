@@ -229,7 +229,11 @@ commit and replace the hashes and SHA together.
 ```bash
 ./run_scores.sh --site uchicago
 ./run_scores.sh --site uchicago --rebuild        # ignore any cache, build from raw CLIF
+./run_scores.sh --site uchicago --fresh          # back up output/<site>, then --rebuild
+./run_scores.sh --site uchicago --from 07        # rerun stage 7 onward, reusing stages 0-4
+./run_scores.sh --site uchicago --probe          # also run the 07b covariate probe
 ./run_scores.sh --site uchicago --require-stage  # fail instead of cold-building (CI)
+./show_results.sh --site uchicago                # print the shareable, aggregate outputs
 ```
 
 **Windows (PowerShell)**
@@ -237,8 +241,18 @@ commit and replace the hashes and SHA together.
 ```powershell
 .\run_scores.ps1 -Site uchicago
 .\run_scores.ps1 -Site uchicago -Rebuild
+.\run_scores.ps1 -Site uchicago -Fresh
+.\run_scores.ps1 -Site uchicago -From 07
+.\run_scores.ps1 -Site uchicago -Probe
 .\run_scores.ps1 -Site uchicago -RequireStage
+.\show_results.ps1 -Site uchicago
 ```
+
+`--from` accepts `00`, `01`, `02`, `03`, `04` or `07` and needs an earlier run of the site to
+resume from; `--rebuild` and `--fresh` rebuild the cohort in stage 0, so they need `--from 00`.
+`--fresh` moves the old output aside rather than deleting it. `show_results` prints only named
+aggregate files under `final_no_phi/` (the probe log, the pooling log, the model summaries) and
+leaves out the per-unit tables, whose counts can fall below the small-cell threshold.
 
 The outcome model is a separate R step, run after the Python pipeline. It reads the site from
 `CLIF_SITE` (default `uchicago`):
@@ -260,11 +274,21 @@ each site with its own profile, then stack their patient rows and unit panels an
 once on the stack:
 
 ```bash
-./run_scores.sh --site site_one          # and each other member
-cp sites/pooled.example.json sites/pooled.json   # list the members; order sets Site A, B, ...
-.venv/bin/python code/07c_pool_sites.py
-CLIF_SITE=pooled Rscript code/08_outcome_model.R
+./run_scores.sh --site site_one --probe                     # and each other member
+./run_pooled.sh --members site_one,site_two,site_three      # order sets Site A, B, ...
+./show_results.sh --site pooled
 ```
+
+```powershell
+.\run_scores.ps1 -Site site_one -Probe
+.\run_pooled.ps1 -Members site_one,site_two,site_three
+.\show_results.ps1 -Site pooled
+```
+
+`run_pooled` writes `sites/pooled.json` from `--members` (or uses the existing one), checks that
+R and its packages load before the long run, then runs stage 7c and the pooled stage 8;
+`--pool-only` stops after 7c. Run by hand, the steps are `code/07c_pool_sites.py` followed by
+`CLIF_SITE=pooled Rscript code/08_outcome_model.R`.
 
 Raw CLIF tables are never merged. Stage 7c refuses to pool sites whose definitions, CLIF major.minor version (patch releases may differ)
 or upstream SHA differ, or whose row- and panel-building code differs between the commits they
@@ -332,7 +356,9 @@ clif-vent-qi-score/
 ├── bundle_config.py            # site profile (+) definitions resolver; reads thresholds from the YAML
 ├── requirements.txt            # pinned Python compute stack
 ├── renv.lock                   # pinned R compute stack (renv::restore())
-├── run_scores.sh / .ps1        # one-command build, per-stage timings
+├── run_scores.sh / .ps1        # one-command site build, per-stage timings; --from / --fresh / --probe
+├── run_pooled.sh / .ps1        # stage 7c + pooled stage 8 for the members of sites/pooled.json
+├── show_results.sh / .ps1      # print the shareable, aggregate outputs for a site or pooled
 ├── definitions/                # SHARED, versioned clinical spec (committed)
 │   ├── respiratory.yaml        #   verbatim from clif-dashboards @ pinned SHA
 │   ├── platform.yaml           #   ditto
