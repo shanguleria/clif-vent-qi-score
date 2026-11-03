@@ -1,0 +1,374 @@
+{
+  "fio2_set": [
+    0.21,
+    1.0
+  ],
+  "flow_rate_set": [
+    -50.0,
+    100.0
+  ],
+  "inspiratory_time_set": [
+    -1.0,
+    50.0
+  ],
+  "lpm_set": [
+    0,
+    60
+  ],
+  "mean_airway_pressure_obs": [
+    0.0,
+    50.0
+  ],
+  "minute_vent_obs": [
+    0.0,
+    40.0
+  ],
+  "peak_inspiratory_pressure_obs": [
+    -50.0,
+    100.0
+  ],
+  "peak_inspiratory_pressure_set": [
+    -50.0,
+    100.0
+  ],
+  "peep_obs": [
+    0.0,
+    50.0
+  ],
+  "peep_set": [
+    0,
+    50
+  ],
+  "plateau_pressure_obs": [
+    0.0,
+    100.0
+  ],
+  "pressure_control_set": [
+    -50.0,
+    50.0
+  ],
+  "pressure_support_set": [
+    -50.0,
+    50.0
+  ],
+  "resp_rate_obs": [
+    0,
+    100
+  ],
+  "resp_rate_set": [
+    0,
+    100
+  ],
+  "tidal_volume_obs": [
+    100.0,
+    3000.0
+  ],
+  "tidal_volume_set": [
+    100.0,
+    3000.0
+  ],
+  "dbp": [
+    0,
+    200
+  ],
+  "heart_rate": [
+    0,
+    300
+  ],
+  "height_cm": [
+    50,
+    255
+  ],
+  "map": [
+    0,
+    250
+  ],
+  "respiratory_rate": [
+    0,
+    100
+  ],
+  "sbp": [
+    0,
+    300
+  ],
+  "spo2": [
+    50,
+    100
+  ],
+  "temp_c": [
+    32,
+    44
+  ],
+  "weight_kg": [
+    20,
+    1100
+  ],
+  "albumin": [
+    0.0,
+    15.0
+  ],
+  "alkaline_phosphatase": [
+    0,
+    5000
+  ],
+  "alt": [
+    0,
+    20000
+  ],
+  "ast": [
+    0,
+    20000
+  ],
+  "basophils_absolute": [
+    0.0,
+    50.0
+  ],
+  "basophils_percent": [
+    0.0,
+    100.0
+  ],
+  "bicarbonate": [
+    0.0,
+    50.0
+  ],
+  "bilirubin_conjugated": [
+    0.0,
+    50.0
+  ],
+  "bilirubin_total": [
+    0.0,
+    80.0
+  ],
+  "bilirubin_unconjugated": [
+    0.0,
+    50.0
+  ],
+  "bun": [
+    0.0,
+    250.0
+  ],
+  "calcium_ionized": [
+    0.0,
+    20.0
+  ],
+  "calcium_total": [
+    0.0,
+    20.0
+  ],
+  "chloride": [
+    50.0,
+    140.0
+  ],
+  "creatinine": [
+    0.0,
+    20.0
+  ],
+  "crp": [
+    0.0,
+    1000.0
+  ],
+  "eosinophils_absolute": [
+    0.0,
+    50.0
+  ],
+  "eosinophils_percent": [
+    0.0,
+    100.0
+  ],
+  "esr": [
+    0,
+    1000
+  ],
+  "ferritin": [
+    0.0,
+    300000.0
+  ],
+  "gcs_total": [
+    3,
+    15
+  ],
+  "glucose_fingerstick": [
+    0.0,
+    2000.0
+  ],
+  "glucose_serum": [
+    0.0,
+    2000.0
+  ],
+  "hemoglobin": [
+    2.0,
+    25.0
+  ],
+  "inr": [
+    0.0,
+    15.0
+  ],
+  "lactate": [
+    0,
+    40
+  ],
+  "ldh": [
+    0,
+    10000
+  ],
+  "lymphocytes_absolute": [
+    0.0,
+    50.0
+  ],
+  "lymphocytes_percent": [
+    0.0,
+    100.0
+  ],
+  "magnesium": [
+    0.0,
+    10.0
+  ],
+  "monocytes_absolute": [
+    0.0,
+    50.0
+  ],
+  "monocytes_percent": [
+    0.0,
+    100.0
+  ],
+  "neutrophils_absolute": [
+    0.0,
+    50.0
+  ],
+  "neutrophils_percent": [
+    0.0,
+    100.0
+  ],
+  "pco2_arterial": [
+    0.0,
+    250.0
+  ],
+  "pco2_venous": [
+    0.0,
+    250.0
+  ],
+  "pf_sf_ratio": [
+    0,
+    1000
+  ],
+  "ph_arterial": [
+    6.0,
+    10.0
+  ],
+  "ph_venous": [
+    5.0,
+    10.0
+  ],
+  "phosphate": [
+    0.0,
+    15.0
+  ],
+  "platelet_count": [
+    0.0,
+    2000.0
+  ],
+  "po2_arterial": [
+    0,
+    700
+  ],
+  "potassium": [
+    0.0,
+    15.0
+  ],
+  "procalcitonin": [
+    0.0,
+    1000.0
+  ],
+  "pt": [
+    1.0,
+    200.0
+  ],
+  "ptt": [
+    1.0,
+    200.0
+  ],
+  "so2_arterial": [
+    0.0,
+    100.0
+  ],
+  "so2_central_venous": [
+    0.0,
+    100.0
+  ],
+  "so2_mixed_venous": [
+    0.0,
+    100.0
+  ],
+  "sodium": [
+    90.0,
+    210.0
+  ],
+  "total_protein": [
+    0.0,
+    20.0
+  ],
+  "troponin_i": [
+    0.0,
+    10000.0
+  ],
+  "troponin_t": [
+    0.0,
+    10000.0
+  ],
+  "wbc": [
+    0.0,
+    500.0
+  ],
+  "blood_flow_rate": [
+    10,
+    500
+  ],
+  "dialysate_flow_rate": [
+    0,
+    12000
+  ],
+  "post_filter_replacement_fluid_rate": [
+    0,
+    12000
+  ],
+  "pre_filter_replacement_fluid_rate": [
+    0,
+    12000
+  ],
+  "ultrafiltration_out": [
+    0,
+    500
+  ],
+  "angiotensin": [
+    0,
+    1
+  ],
+  "dobutamine": [
+    0,
+    40
+  ],
+  "dopamine": [
+    0,
+    20
+  ],
+  "epinephrine": [
+    0,
+    3
+  ],
+  "metaraminol": [
+    0,
+    10
+  ],
+  "norepinephrine": [
+    0,
+    3
+  ],
+  "phenylephrine": [
+    0,
+    10
+  ],
+  "vasopressin": [
+    0,
+    0.1
+  ]
+}

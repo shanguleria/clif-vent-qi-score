@@ -1,7 +1,7 @@
 """Classic SOFA from CLIF-epidemiology-of-CRRT, with a waterfall-based respiratory component.
 
-Imported from a checkout rather than vendored so it cannot drift from the project that owns it;
-`CRRT_CODE_DIR` is where that checkout lives.
+The calculator is vendored verbatim under vendor/crrt_sofa/, pinned and hashed in its SOURCE file,
+so this repo needs no CRRT checkout.
 
 Two changes on top of what the calculator returns. Respiratory is recomputed from the waterfall
 FiO2 with a P/F -> S/F fallback (common/oxygenation.py), which recovers the event-based charting
@@ -12,22 +12,19 @@ respiratory subscore reaches it.
 from __future__ import annotations
 
 import importlib.util
-import os
 import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import yaml
 
 from . import attribution as attr
 from . import oxygenation as oxy
 
-# Defaults to a sibling checkout of CLIF-epidemiology-of-CRRT; override with
-# CLIF_CRRT_CODE_DIR. Required -- stage 7 cannot compute SOFA without it.
-CRRT_CODE_DIR = Path(os.environ.get(
-    "CLIF_CRRT_CODE_DIR",
-    Path(__file__).resolve().parents[2] / "CLIF-epidemiology-of-CRRT" / "code"))
-CRRT_COMMIT = "ec19204"
+VENDOR_DIR = Path(__file__).resolve().parents[1] / "vendor" / "crrt_sofa"
+CRRT_CODE_DIR = VENDOR_DIR / "code"
+CRRT_COMMIT = yaml.safe_load((VENDOR_DIR / "SOURCE").read_text())["upstream_sha_short"]
 
 SUBSCORES = ["sofa_cv_97", "sofa_coag", "sofa_liver", "sofa_resp", "sofa_cns", "sofa_renal"]
 
@@ -36,11 +33,6 @@ COMPONENT_VALUES = ["pf", "sf", "platelet_count", "gcs_total", "bilirubin_total"
 
 
 def load_calculator():
-    if not (CRRT_CODE_DIR / "sofa_calculator.py").exists():
-        raise FileNotFoundError(
-            f"CRRT sofa_calculator.py not found at {CRRT_CODE_DIR}. Clone "
-            f"Common-Longitudinal-ICU-data-Format/CLIF-epidemiology-of-CRRT and point "
-            f"CRRT_CODE_DIR at its code/ folder.")
     if str(CRRT_CODE_DIR) not in sys.path:
         sys.path.insert(0, str(CRRT_CODE_DIR))      # its own sibling imports (outlier_utils)
     spec = importlib.util.spec_from_file_location(

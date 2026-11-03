@@ -16,6 +16,8 @@ pandas==2.3.3
 numpy==2.5.4
 pyarrow==26.0.0
 duckdb==1.5.6
+# The vendored classic SOFA calculator (vendor/crrt_sofa) computes in polars directly.
+polars==1.44.2
 pyyaml>=6.0.3
 
 # Test-only — does not affect computed metrics.

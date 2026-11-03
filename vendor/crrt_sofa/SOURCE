@@ -1,0 +1,19 @@
+# Provenance of the vendored classic SOFA calculator.
+#
+# Verbatim copies (git show <sha>:<path>) from CLIF-epidemiology-of-CRRT, Apache-2.0 (LICENSE
+# beside this file). Vendored so this repo runs at a site without that checkout. The code/ and
+# config/ layout is kept because outlier_utils.py finds outlier_config.json at ../config.
+# Never edit these files: tests/test_vendor_crrt.py fails on any byte change. To update, re-copy
+# from a new upstream commit and replace every hash and the sha below together.
+
+upstream_repo: https://github.com/shanguleria/CLIF-epidemiology-of-CRRT
+upstream_parent: https://github.com/Common-Longitudinal-ICU-data-Format/CLIF-epidemiology-of-CRRT
+upstream_sha: ec192043bd015f0634fd1c84ebb070e6aad31fa7
+upstream_sha_short: ec19204
+upstream_commit_date: 2026-09-28T08:05:27-05:00
+copied_utc: 2026-11-03
+files:
+  code/sofa_calculator.py: sha256:af06a538aefcaebd0860542022616d2eb57be6da32bf29d79f00f5a3d0586728
+  code/outlier_utils.py: sha256:cd472e541dbe3cf591c10b8e78e8f78e27ec968c578fee1a22156301c9f07653
+  config/outlier_config.json: sha256:8720a8ce2355560085bf7d5785884e76f8300633389cd3ffda1826d3eabf3e7c
+  LICENSE: sha256:aaf2e500fce6aa3f5140e0adcc1956bfaa39403a9796cb3763f727708102a97e
