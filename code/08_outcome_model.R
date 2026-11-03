@@ -33,6 +33,12 @@ SOFA_COMPONENTS <- c(sofa_resp = "Respiratory", sofa_coag = "Coagulation",
                      sofa_cns = "Central nervous system", sofa_renal = "Renal")
 raw_cols <- function(terms) sub("^age_z$", "age_at_admission", terms)
 stopifnot(!anyNA(df[, raw_cols(ADJUST)]))
+# Sites code inter-hospital transfer differently (one as `osh`, another as `facility`), so the two
+# are one level; `other` is too sparse to estimate and joins `direct`. Stage 7 keeps the raw
+# categories, so this is a modelling choice made here.
+ADMISSION_RECODE <- c(osh = "transfer", facility = "transfer", other = "direct")
+adm <- as.character(df$admission_type)
+df$admission_type <- ifelse(adm %in% names(ADMISSION_RECODE), unname(ADMISSION_RECODE[adm]), adm)
 for (v in names(REF)) df[[v]] <- relevel(factor(df[[v]]), ref = REF[[v]])
 
 # Pooled data (code/07c_pool_sites.py) carries a `site` column. Site enters every specification as

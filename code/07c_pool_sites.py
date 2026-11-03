@@ -231,7 +231,7 @@ def main() -> int:
     one_site = [(v, lv) for (v, lv), t in table.groupby(["variable", "level"])
                 if t["n"].fillna(1).gt(0).sum() == 1]
     if one_site:
-        log(f"    levels seen at only one site (confounded with its fixed effect): {one_site}")
+        log(f"    levels seen at only one site (their coefficient is estimated within that site alone): {one_site}")
 
     (phi / "analysis").mkdir(parents=True, exist_ok=True)
     pooled_rows.to_parquet(phi / "analysis" / "analysis_dataset_extended.parquet", index=False)
