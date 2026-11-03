@@ -176,7 +176,7 @@ recomputed as stage 7 describes. The covariates are built in stage 7 (`common/co
 | `hours_to_intubation` | Admission to first intubation: ≤ 0 h, 0–24 h, 24–72 h, 72 h–7 d, > 7 d. ≤ 0 h marks intubation before arrival | 0–24 h |
 | `location_at_intubation` | `adt.location_category` of the row spanning intubation on half-open intervals; `ed`, `icu`, `procedural` kept, no covering row → `unknown`, every other category → `ward_other` | `icu` |
 | `procedural_within_24h` | Any `procedural` ADT stay overlapping the 24 h before intubation — the post-operative case mix | 0 |
-| `limited_code_status` | Last `code_status_category` at or before intubation is a DNR-type order (DNR, DNAR, UDNR, DNR/DNI, DNAR/DNI, AND). Full and no recorded order form one level: recording of any order varies by year and by unit, so separating them would adjust for documentation practice. Orders after intubation are excluded as mediators. `Other` is classed as not limited, since it does not state a limitation. Any category in neither set stops stage 7 until classified | 0 |
+| `limited_code_status` | Last `code_status_category` starting during the current admission (from `admission_dttm`) and at or before intubation is a DNR-type order (DNR, DNAR, UDNR, DNR/DNI, DNAR/DNI, AND). Full and no recorded order form one level: recording of any order varies by year and by unit, so separating them would adjust for documentation practice. Orders after intubation are excluded as mediators, and orders from earlier admissions are excluded because CLIF keys `code_status` by patient, so an old order would otherwise still count. `Other` is classed as not limited, since it does not state a limitation. Any category in neither set stops stage 7 until classified | 0 |
 | `admission_type` | `admission_type_category` of the encounter's first hospitalization, recoded in stage 8: `other` → `direct` (sparse, similar crude mortality). `osh` and `facility` stay separate because facility admissions are a distinctly sicker group where both are used, although one site codes most transfers as `facility`. Stage 7 keeps the raw categories | `ed` |
 
 The covariates were chosen after `code/07b_covariate_probe.py` tabulated each candidate's coverage
@@ -199,12 +199,15 @@ labels. An absent categorical value is reported as its own `Unknown` level rathe
 into another category. The p-values treat patients as independent and so ignore clustering within
 ICUs — they are descriptive. Cells are not small-cell suppressed.
 
-**Sensitivity analyses** (`sensitivity_analyses.csv`) refit the full specification under six
+**Sensitivity analyses** (`sensitivity_analyses.csv`) refit the full specification under seven
 prespecified variations: the original adjustment (age, `cci`, SOFA) alone, the six SOFA subscores
 in place of the total (an absent subscore entering as 0, as in the total), `score_full` as the
 exposure, units meeting every `score_core` denominator floor, patients cared for in exactly one
-ICU, and SOFA with the liver component removed (the component with the widest between-unit
-charting gap). Each refits its **own** null
+ICU, SOFA with the liver component removed (the component with the widest between-unit
+charting gap), and patients whose first IMV episode lasted at least 24 h (`first_episode_hours`,
+the episode's end minus start, so gaps shorter than the 24 h episode-gap rule count as
+ventilated). The primary cohort has no minimum IMV duration; the 24 h row checks that brief,
+mostly post-procedural ventilation is not driving the result. Each refits its **own** null
 model on its own subset, so `var_explained_vs_null` compares like with like; `n_excluded` is
 reported so a restriction that happens to exclude nobody reads as vacuous rather than as applied.
 

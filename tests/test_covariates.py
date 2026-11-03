@@ -20,6 +20,7 @@ def ts(h):
 def cohort():
     return pd.DataFrame({"patient_id": ["p1", "p2", "p3", "p4"],
                          "encounter_block": ["1", "2", "3", "4"],
+                         "admission_dttm": [ts(0)] * 4,
                          "intubation_dttm": [ts(10), ts(5), ts(50), ts(3)]})
 
 
@@ -84,9 +85,26 @@ def test_code_status_takes_last_order_before_intubation(cohort):
 
 
 def test_code_status_matches_integer_patient_ids():
-    c = pd.DataFrame({"patient_id": [7], "encounter_block": ["1"], "intubation_dttm": [ts(5)]})
+    c = pd.DataFrame({"patient_id": [7], "encounter_block": ["1"], "admission_dttm": [ts(0)],
+                      "intubation_dttm": [ts(5)]})
     cs = pd.DataFrame({"patient_id": ["7"], "start_dttm": [ts(1)], "code_status_category": ["Full"]})
     assert cov.code_status_before(c, cs).iloc[0] == "Full"
+
+
+def test_code_status_ignores_orders_from_earlier_admissions():
+    c = pd.DataFrame({"patient_id": ["p", "q"], "encounter_block": ["1", "2"],
+                      "admission_dttm": [ts(100), ts(100)], "intubation_dttm": [ts(110), ts(110)]})
+    cs = pd.DataFrame({"patient_id": ["p", "q", "q"],
+                       "start_dttm": [ts(-5000), ts(-5000), ts(101)],
+                       "code_status_category": ["DNR", "DNR", "Full"]})
+    assert cov.code_status_before(c, cs).tolist() == [cov.NONE_RECORDED, "Full"]
+
+
+def test_code_status_counts_an_order_at_the_admission_instant():
+    c = pd.DataFrame({"patient_id": ["p"], "encounter_block": ["1"],
+                      "admission_dttm": [ts(100)], "intubation_dttm": [ts(110)]})
+    cs = pd.DataFrame({"patient_id": ["p"], "start_dttm": [ts(100)], "code_status_category": ["DNR"]})
+    assert cov.code_status_before(c, cs).tolist() == ["DNR"]
 
 
 def test_tabulate_overall_and_by_group():

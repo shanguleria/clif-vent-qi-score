@@ -53,7 +53,7 @@ PREFIXED = ("patient_id", "hospitalization_id", "encounter_block", "unit_name")
 
 # What stage 8 reads; a site missing any of these cannot be pooled.
 REQUIRED = ["patient_id", "died", "unit_name", "unit_id", "qclif", "age_at_admission", "cci",
-            "sofa", "cci_poa", "hours_to_intubation", "location_at_intubation",
+            "sofa", "cci_poa", "first_episode_hours", "hours_to_intubation", "location_at_intubation",
             "procedural_within_24h", "limited_code_status", "admission_type", "n_icus",
             "icu_hours_in_unit", "discharge_category", "sex_category", "race_category",
             "ethnicity_category", "sofa_resp", "sofa_coag", "sofa_liver", "sofa_cv_97",

@@ -87,13 +87,18 @@ def clifpy_config(site) -> Path:
 
 
 def first_encounter_per_patient(episodes, encounters) -> pd.DataFrame:
-    """First qualifying IMV hospitalisation per patient, with its first intubation time."""
+    """First qualifying IMV hospitalisation per patient, with its first intubation time and the
+    length of that first episode (end - start, so gaps under the episode-gap rule are included)."""
     ep = episodes.copy()
     ep["start"] = pd.to_datetime(ep["start"], utc=True)
+    ep["end"] = pd.to_datetime(ep["end"], utc=True)
     ep["encounter_block"] = attr.norm_block(ep["encounter_block"])
-    first_ep = (ep.sort_values(["encounter_block", "start"], kind="stable")
-                .groupby("encounter_block", as_index=False)
-                .agg(intubation_dttm=("start", "min")))
+    first_ep = (ep.sort_values(["encounter_block", "start", "end"], kind="stable")
+                .drop_duplicates("encounter_block").reset_index(drop=True))
+    first_ep = pd.DataFrame({
+        "encounter_block": first_ep["encounter_block"],
+        "intubation_dttm": first_ep["start"],
+        "first_episode_hours": (first_ep["end"] - first_ep["start"]).dt.total_seconds() / 3600})
     enc = encounters.copy()
     enc["encounter_block"] = attr.norm_block(enc["encounter_block"])
     m = first_ep.merge(enc, on="encounter_block", how="left")
@@ -346,6 +351,7 @@ def main() -> int:
     require_columns(cohort, sofa_crrt.COMPONENT_VALUES, "component covariates")
     require_columns(cohort, REQUIRED_EXTENDED, "Table 1 demographics")
     require_columns(cohort, MODEL_COVARIATES, "model covariates")
+    require_columns(cohort, ["first_episode_hours"], "first IMV episode length")
     nulls = {c: int(cohort[c].isna().sum()) for c in MODEL_COVARIATES if cohort[c].isna().any()}
     if nulls:
         raise AssertionError(f"model covariates must be complete by construction: {nulls}")
@@ -358,7 +364,7 @@ def main() -> int:
 
     extended = (["unit_id", "encounter_block", "hospitalization_id", "intubation_dttm",
                 "admission_dttm", "discharge_dttm", "discharge_category",
-                "icu_hours_in_unit", "icu_hours_total", "n_icus",
+                "icu_hours_in_unit", "icu_hours_total", "n_icus", "first_episode_hours",
                 "sex_category", "race_category", "ethnicity_category",
                 *MODEL_COVARIATES, "code_status_before_intubation",
                 "sofa_total_raw", "sofa_resp_raw", "sofa_n_components", "oxy_source"]

@@ -29,6 +29,9 @@ ADJUST_LABEL <- paste("age, present-on-admission Charlson comorbidity index, SOF
                       "stay in the 24 h before intubation, limited code status and admission type")
 REF <- c(hours_to_intubation = "0-24 h", location_at_intubation = "icu", admission_type = "ed")
 HOURS_LEVELS <- c("<= 0 h", "0-24 h", "24-72 h", "72 h-7 d", "> 7 d")
+# Sensitivity only: the primary cohort has no minimum IMV duration.
+MIN_IMV_HOURS <- 24
+stopifnot("first_episode_hours" %in% names(df))
 SOFA_COMPONENTS <- c(sofa_resp = "Respiratory", sofa_coag = "Coagulation",
                      sofa_liver = "Liver", sofa_cv_97 = "Cardiovascular",
                      sofa_cns = "Central nervous system", sofa_renal = "Renal")
@@ -347,7 +350,9 @@ sens <- rbind(
   fit_one("single_icu", "patients cared for in exactly one ICU",
           df[!is.na(df$n_icus) & df$n_icus == 1, ]),
   fit_one("sofa_minus_liver", "SOFA excluding the liver component",
-          df, adjust = swap(ADJUST, "sofa", "sofa_no_liver")))
+          df, adjust = swap(ADJUST, "sofa", "sofa_no_liver")),
+  fit_one("imv_24h", "first IMV episode lasting at least 24 h",
+          df[which(df$first_episode_hours >= MIN_IMV_HOURS), ]))
 if (POOLED) sens <- rbind(sens, do.call(rbind, lapply(levels(df$site), function(s)
   fit_one(paste0("without_", gsub(" ", "_", tolower(s))), paste("all sites except", s),
           df[df$site != s, ]))))

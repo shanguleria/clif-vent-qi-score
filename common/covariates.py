@@ -110,14 +110,18 @@ def procedural_within(cohort: pd.DataFrame, adt: pd.DataFrame, hours: float) -> 
 
 
 def code_status_before(cohort: pd.DataFrame, code_status: pd.DataFrame) -> pd.Series:
-    """The last `code_status_category` starting at or before intubation. Later orders are excluded:
-    a limitation placed after intubation sits on the path from care to death."""
+    """The last `code_status_category` starting during the current admission, at or before
+    intubation. Later orders are excluded: a limitation placed after intubation sits on the path
+    from care to death. Earlier admissions are excluded too: CLIF keys code_status by patient,
+    so without the lower bound an order from a stay years before would still count.
+    `cohort` needs `admission_dttm` as well as `intubation_dttm`."""
     cs = code_status[["patient_id", "start_dttm", "code_status_category"]].copy()
     cs["patient_id"] = cs["patient_id"].astype(str)
     cs["start_dttm"] = attr.as_ns(cs["start_dttm"])
     co = cohort.assign(patient_id=cohort["patient_id"].astype(str))
     m = _anchored(co, cs, "patient_id", ["start_dttm", "code_status_category"])
-    m = m[m["start_dttm"] <= m["t"]]
+    m["admit"] = attr.as_ns(cohort["admission_dttm"]).array[m["_row"].to_numpy()]
+    m = m[(m["start_dttm"] >= m["admit"]) & (m["start_dttm"] <= m["t"])]
     m = (m.sort_values(["_row", "start_dttm", "code_status_category"], kind="stable")
          .drop_duplicates("_row", keep="last"))
     out = np.full(len(cohort), NONE_RECORDED, dtype=object)

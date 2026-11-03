@@ -57,3 +57,20 @@ def test_nullable_eq_alone_is_the_bug_poa_mask_avoids():
     flag = pd.Series([1, None], dtype="Int64")
     with pytest.raises(ValueError, match="NA"):
         pd.DataFrame({"x": [1, 2]})[flag.eq(1).to_numpy()]
+
+
+def _ts(h):
+    return pd.Timestamp("2024-01-01", tz="UTC") + pd.Timedelta(hours=h)
+
+
+def test_first_episode_length_comes_from_the_first_episode_of_the_first_encounter():
+    mod = _stage07()
+    episodes = pd.DataFrame({"encounter_block": [1, 1, 2],
+                             "start": [_ts(50), _ts(10), _ts(500)],
+                             "end":   [_ts(60), _ts(40), _ts(600)]})
+    encounters = pd.DataFrame({"encounter_block": [1, 2], "patient_id": ["p", "p"]})
+    out = mod.first_encounter_per_patient(episodes, encounters)
+    assert len(out) == 1
+    assert out.loc[0, "intubation_dttm"] == _ts(10)
+    assert out.loc[0, "first_episode_hours"] == 30
+    assert str(out["intubation_dttm"].dtype).startswith("datetime64")
