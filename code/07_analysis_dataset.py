@@ -329,6 +329,15 @@ def main() -> int:
     # ---- 6. write -----------------------------------------------------------
     COLUMNS = ["patient_id", "died", "death_dttm", "unit_name", "qclif",
                "age_at_admission", "cci", "sofa"]
+    # Every check runs before the first write, so a failed run leaves the previous outputs intact
+    # rather than a new short file beside a stale or missing extended one.
+    require_columns(cohort, sofa_crrt.COMPONENT_VALUES, "component covariates")
+    require_columns(cohort, REQUIRED_EXTENDED, "Table 1 demographics")
+    require_columns(cohort, MODEL_COVARIATES, "model covariates")
+    nulls = {c: int(cohort[c].isna().sum()) for c in MODEL_COVARIATES if cohort[c].isna().any()}
+    if nulls:
+        raise AssertionError(f"model covariates must be complete by construction: {nulls}")
+
     out = phi / "analysis"
     out.mkdir(parents=True, exist_ok=True)
     df = cohort[COLUMNS].copy()
@@ -343,12 +352,6 @@ def main() -> int:
                 "sofa_total_raw", "sofa_resp_raw", "sofa_n_components", "oxy_source"]
                + comp + sofa_crrt.COMPONENT_VALUES + inputs)
     ext_cols = [c for c in dict.fromkeys(extended) if c in cohort.columns]
-    require_columns(cohort, sofa_crrt.COMPONENT_VALUES, "component covariates")
-    require_columns(cohort, REQUIRED_EXTENDED, "Table 1 demographics")
-    require_columns(cohort, MODEL_COVARIATES, "model covariates")
-    nulls = {c: int(cohort[c].isna().sum()) for c in MODEL_COVARIATES if cohort[c].isna().any()}
-    if nulls:
-        raise AssertionError(f"model covariates must be complete by construction: {nulls}")
     cohort[COLUMNS + ext_cols].to_parquet(
         out / "analysis_dataset_extended.parquet", index=False)
 

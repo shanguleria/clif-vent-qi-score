@@ -32,6 +32,27 @@ COMPONENT_VALUES = ["pf", "sf", "platelet_count", "gcs_total", "bilirubin_total"
                     "creatinine", "inr", "nee", "map"]
 
 
+PF_TIME_UNIT = "us"
+
+
+def align_pf_time_units(pf_ratios):
+    """Upstream workaround: `_calculate_concurrent_pf_ratios` join_asofs `lab_result_dttm` onto
+    `recorded_dttm`, aligning their time zone but not their time unit, so a site whose labs and
+    respiratory_support parquet differ in precision (ns vs us) fails with a schema error. The
+    calculator already casts the unit before its other as-of join (medications onto weight).
+    Wrapped here because the vendored file must stay byte-identical to its pin."""
+    import functools
+
+    import polars as pl
+
+    @functools.wraps(pf_ratios)
+    def wrapped(labs_df, resp_df, *args, **kwargs):
+        labs_df = labs_df.with_columns(pl.col("lab_result_dttm").dt.cast_time_unit(PF_TIME_UNIT))
+        resp_df = resp_df.with_columns(pl.col("recorded_dttm").dt.cast_time_unit(PF_TIME_UNIT))
+        return pf_ratios(labs_df, resp_df, *args, **kwargs)
+    return wrapped
+
+
 def load_calculator():
     if str(CRRT_CODE_DIR) not in sys.path:
         sys.path.insert(0, str(CRRT_CODE_DIR))      # its own sibling imports (outlier_utils)
@@ -39,6 +60,7 @@ def load_calculator():
         "crrt_sofa_calculator", CRRT_CODE_DIR / "sofa_calculator.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    mod._calculate_concurrent_pf_ratios = align_pf_time_units(mod._calculate_concurrent_pf_ratios)
     return mod
 
 
@@ -105,6 +127,8 @@ def oxygenation_inputs(src, cfg, mapping, windows):
 
 def compute(src, cfg, mapping, cohort, data_directory, timezone, log=print) -> pd.DataFrame:
     """`cohort` needs [encounter_block, intubation_dttm, start_dttm, end_dttm]."""
+    import functools
+
     import polars as pl
     sc = load_calculator()
 

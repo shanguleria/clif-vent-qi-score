@@ -214,7 +214,9 @@ Stage 7 computes classic SOFA with the calculator from
 [`CLIF-epidemiology-of-CRRT`](https://github.com/Common-Longitudinal-ICU-data-Format/CLIF-epidemiology-of-CRRT),
 vendored verbatim under `vendor/crrt_sofa/` (Apache-2.0, license included), so no CRRT checkout
 is needed. `vendor/crrt_sofa/SOURCE` records the upstream commit and a sha256 per file, and
-`tests/test_vendor_crrt.py` fails if any vendored byte changes. To update, re-copy from a new
+`tests/test_vendor_crrt.py` fails if any vendored byte changes. One upstream gap is patched from
+`common/sofa_crrt.py` instead: the P/F pairing aligns lab and respiratory-support time zones but
+not time units, so both are cast to microseconds first. To update, re-copy from a new
 commit and replace the hashes and SHA together.
 
 ---
@@ -335,6 +337,7 @@ clif-vent-qi-score/
 │   ├── test_covariates.py      #   intubation-anchored covariates + suppression
 │   ├── test_covariate_probe.py #   anonymized hospital-to-ICU summary
 │   ├── test_vendor_crrt.py     #   vendored SOFA calculator is byte-identical to its pin
+│   ├── test_sofa_crrt.py       #   P/F time-unit workaround around the vendored calculator
 │   └── test_phi_gate.py        #   the shareable-output identifier gate actually fires
 ├── docs/METHODS.md             # definitions, deviations, known caveats
 └── output/<site>/              # gitignored
