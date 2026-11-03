@@ -332,6 +332,12 @@ def main() -> int:
     keep = [c for c in dict.fromkeys(keep) if c in sofa.columns]
     cohort = cohort.merge(sofa[keep].rename(columns={"sofa_total": "sofa"}),
                           on="encounter_block", how="left")
+    prof = bc.load_profile(site)
+    gcs = sofa_crrt.gcs_before_intubation(prof["data_path"], prof["timezone"], mp2, win,
+                                          prof.get("file_format", "parquet"))
+    cohort = cohort.merge(gcs, on="encounter_block", how="left")
+    print(f"       gcs_pre (worst GCS in the {sofa_crrt.GCS_BEFORE.total_seconds() / 3600:.0f} h "
+          f"before intubation): recorded for {100 * cohort['gcs_pre'].notna().mean():.1f}%")
     inputs = [c for v in SOFA_INPUTS.values() for c in v if c in cohort.columns]
     print(f"       sofa median {cohort['sofa'].median():.0f} "
           f"(IQR {cohort['sofa'].quantile(.25):.0f}-{cohort['sofa'].quantile(.75):.0f}, "
@@ -348,7 +354,8 @@ def main() -> int:
                "age_at_admission", "cci", "sofa"]
     # Every check runs before the first write, so a failed run leaves the previous outputs intact
     # rather than a new short file beside a stale or missing extended one.
-    require_columns(cohort, sofa_crrt.COMPONENT_VALUES, "component covariates")
+    require_columns(cohort, sofa_crrt.COMPONENT_VALUES + ["gcs_pre", "oxy_source"],
+                    "physiology covariates")
     require_columns(cohort, REQUIRED_EXTENDED, "Table 1 demographics")
     require_columns(cohort, MODEL_COVARIATES, "model covariates")
     require_columns(cohort, ["first_episode_hours"], "first IMV episode length")
@@ -367,7 +374,7 @@ def main() -> int:
                 "icu_hours_in_unit", "icu_hours_total", "n_icus", "first_episode_hours",
                 "sex_category", "race_category", "ethnicity_category",
                 *MODEL_COVARIATES, "code_status_before_intubation",
-                "sofa_total_raw", "sofa_resp_raw", "sofa_n_components", "oxy_source"]
+                "sofa_total_raw", "sofa_resp_raw", "sofa_n_components", "oxy_source", "gcs_pre"]
                + comp + sofa_crrt.COMPONENT_VALUES + inputs)
     ext_cols = [c for c in dict.fromkeys(extended) if c in cohort.columns]
     cohort[COLUMNS + ext_cols].to_parquet(

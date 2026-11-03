@@ -34,6 +34,9 @@ COMPONENT_VALUES = ["pf", "sf", "platelet_count", "gcs_total", "bilirubin_total"
 
 PF_TIME_UNIT = "us"
 
+GCS_BEFORE = pd.Timedelta(hours=24)
+GCS_RANGE = (3, 15)
+
 
 def align_pf_time_units(pf_ratios):
     """Upstream workaround: `_calculate_concurrent_pf_ratios` join_asofs `lab_result_dttm` onto
@@ -171,3 +174,37 @@ def compute(src, cfg, mapping, cohort, data_directory, timezone, log=print) -> p
     out["sofa_total"] = out[SUBSCORES].fillna(0).sum(axis=1)
     out["sofa_n_components"] = out[SUBSCORES].notna().sum(axis=1)
     return out
+
+
+def gcs_before_intubation(data_directory, timezone, mapping, cohort, filetype="parquet",
+                          before=GCS_BEFORE) -> pd.DataFrame:
+    """Worst gcs_total in [intubation - `before`, intubation), strictly before the airway: the
+    SOFA window runs to +4 h, where GCS mostly reflects sedation. Read through the vendored
+    assessments loader so time zones are handled as for SOFA's own GCS. `cohort` needs
+    [encounter_block, intubation_dttm]."""
+    import polars as pl
+    path = Path(data_directory) / f"clif_patient_assessments.{filetype}"
+    if not path.exists():
+        raise FileNotFoundError(f"pre-intubation GCS needs {path}")
+    sc = load_calculator()
+    coh = mapping.merge(cohort[["encounter_block", "intubation_dttm"]], on="encounter_block")
+    coh = pd.DataFrame({"hospitalization_id": coh["hospitalization_id"].astype(str),
+                        "encounter_block": coh["encounter_block"],
+                        "start_dttm": coh["intubation_dttm"] - before,
+                        "end_dttm": coh["intubation_dttm"],
+                        "t_intubation": coh["intubation_dttm"]})
+    local = pl.from_pandas(coh)
+    for col in ("start_dttm", "end_dttm", "t_intubation"):
+        local = sc.ensure_local_timezone(local, col, timezone).with_columns(
+            pl.col(col).dt.cast_time_unit("us"))
+    ids = local["hospitalization_id"].unique().to_list()
+    # The loader keeps every cohort column except the window, so t_intubation survives for the
+    # strict upper bound; its own filter is inclusive at both ends.
+    a = (sc._load_patient_assessments(str(data_directory), filetype, ids, local, timezone)
+         .with_columns(pl.col("recorded_dttm").dt.cast_time_unit("us"))
+         .filter((pl.col("recorded_dttm") < pl.col("t_intubation"))
+                 & pl.col("assessment_value").is_between(*GCS_RANGE))
+         .group_by("encounter_block").agg(pl.col("assessment_value").min().alias("gcs_pre"))
+         .collect().to_pandas())
+    a["encounter_block"] = attr.norm_block(a["encounter_block"])
+    return a[["encounter_block", "gcs_pre"]]
