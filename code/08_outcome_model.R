@@ -16,7 +16,17 @@ options(warn = 1)
 
 site <- Sys.getenv("CLIF_SITE", "uchicago")
 cohort <- Sys.getenv("CLIF_COHORT", "all")
+# CLIF_FAST=1: m1-m3, unit effects, figures and abstract_numbers.csv only, into a separate
+# <dir>_fast/ so a full run's outputs are never overwritten. No Table 1, sensitivity analyses or
+# covariate blocks, and the primary cohort's profile CI uses a coarser grid.
+FAST <- Sys.getenv("CLIF_FAST", "0") == "1"
+# CLIF_ADJUST=original drops race, BMI and CRRT, reproducing the adjustment set before they were
+# added, so stage-7 data built before them can still be fit.
+ADJUST_SET <- Sys.getenv("CLIF_ADJUST", "current")
+stopifnot(ADJUST_SET %in% c("current", "original"))
 out <- model_out_dir(site, cohort)
+if (FAST) out <- paste0(out, "_fast")
+if (ADJUST_SET == "original") out <- paste0(out, "_original")
 dir.create(out, recursive = TRUE, showWarnings = FALSE)
 
 TIMES <- data.frame(section = character(), seconds = numeric())
@@ -65,7 +75,8 @@ COHORT_LABEL <- COHORTS[[cohort]]$label
 # get the m1-m3 chain, its variance tests, the per-unit effects, Table 1 and the figures.
 PRIMARY_COHORT <- "early_nonop"
 stopifnot(PRIMARY_COHORT %in% names(COHORTS))
-FULL <- cohort == PRIMARY_COHORT
+PRIMARY <- cohort == PRIMARY_COHORT
+FULL <- PRIMARY && !FAST
 PRIMARY_ONLY_FILES <- c("sensitivity_analyses.csv", "covariate_blocks.csv")
 if (!FULL) unlink(file.path(out, PRIMARY_ONLY_FILES))   # a stale copy from an earlier run would be shown
 
@@ -116,15 +127,30 @@ for (v in names(PHYS_GROUPS))
               sum(grepl("_ns[0-9]+$", PHYS_GROUPS[[v]]))))
 
 # The primary adjustment. Entries name model terms, so age enters as age_z.
-ADJUST <- c(PHYS_TERMS, "cci_poa", "age_z", "hours_to_intubation", "location_at_intubation",
-            "procedural_within_24h", "limited_code_status", "admission_type")
-ADJUST_LABEL <- paste("age, present-on-admission Charlson comorbidity index, physiology at",
-                      "intubation (oxygenation, mean arterial pressure, vasopressor dose,",
-                      "pre-intubation GCS, platelets, bilirubin and creatinine),",
-                      "admission-to-intubation time, location at intubation, a procedural",
-                      "stay in the 24 h before intubation, limited code status and admission type")
-REF <- c(hours_to_intubation = "0-24 h", location_at_intubation = "icu", admission_type = "ed")
+ADJUST <- c(PHYS_TERMS, "crrt_at_intubation", "cci_poa", "age_z", "race_group", "bmi_category",
+            "hours_to_intubation", "location_at_intubation", "procedural_within_24h",
+            "limited_code_status", "admission_type")
+ADJUST_LABEL <- paste("age, race, BMI category, present-on-admission Charlson comorbidity index,",
+                      "physiology at intubation (oxygenation, mean arterial pressure, vasopressor",
+                      "dose, pre-intubation GCS, platelets, bilirubin and creatinine), CRRT in",
+                      "the 24 h before to 4 h after intubation, admission-to-intubation time,",
+                      "location at intubation, a procedural stay in the 24 h before intubation,",
+                      "limited code status and admission type")
+# Same levels as REFERENCE_LEVELS in code/07c_pool_sites.py.
+REF <- c(hours_to_intubation = "0-24 h", location_at_intubation = "icu", admission_type = "ed",
+         race_group = "white", bmi_category = "18.5-24.9")
 HOURS_LEVELS <- c("<= 0 h", "0-24 h", "24-72 h", "72 h-7 d", "> 7 d")
+if (ADJUST_SET == "original") {
+  ADJUST <- setdiff(ADJUST, c("race_group", "bmi_category", "crrt_at_intubation"))
+  REF <- REF[setdiff(names(REF), c("race_group", "bmi_category"))]
+  ADJUST_LABEL <- paste("age, present-on-admission Charlson comorbidity index, physiology at",
+                        "intubation (oxygenation, mean arterial pressure, vasopressor dose,",
+                        "pre-intubation GCS, platelets, bilirubin and creatinine),",
+                        "admission-to-intubation time, location at intubation, a procedural",
+                        "stay in the 24 h before intubation, limited code status and admission type")
+}
+BMI_LEVELS <- c("< 18.5", "18.5-24.9", "25-29.9", "30-39.9", ">= 40", "Missing")
+RACE_LEVELS <- c("white", "black", "other", "unknown")
 # Sensitivity only: the primary cohort has no minimum IMV duration.
 MIN_IMV_HOURS <- 24
 stopifnot("first_episode_hours" %in% names(df))
@@ -329,6 +355,9 @@ write.csv(transform(cat_tab, unit_name = disp(unit_name)), file.path(out, "unit_
 
 # ---- Table 1 -----------------------------------------------------------------
 
+# Not needed for the abstract numbers, so CLIF_FAST skips it.
+if (!FAST) {
+
 # Strata are tertiles of the UNITS ranked by score, not of the patient distribution. The score
 # is lumpy enough across this few units that a patient-weighted cut can leave a stratum holding
 # a single ICU, which would publish that ICU's case mix in a column of its own.
@@ -409,7 +438,10 @@ if (POOLED) row_cat("Site", df$site)
 row_cont("Age at admission, years", df$age_at_admission)
 row_cat("Sex", df$sex_category)
 row_cat("Race", df$race_category)
+if (ADJUST_SET == "current") row_cat("Race, as modelled", factor(as.character(df$race_group), levels = RACE_LEVELS))
 row_cat("Ethnicity", df$ethnicity_category)
+if (ADJUST_SET == "current") row_cont("BMI, kg/m2, where height and weight recorded", df$bmi, dec = 1)
+if (ADJUST_SET == "current") row_cat("BMI category", factor(as.character(df$bmi_category), levels = BMI_LEVELS))
 row_cont("Charlson comorbidity index", df$cci)
 row_cont("Charlson comorbidity index, present on admission", df$cci_poa)
 row_cont("SOFA at intubation", df$sofa)
@@ -427,6 +459,7 @@ stopifnot(setequal(names(PHYS_LABELS), names(PHYS_NORMAL)))
 emit(bold("Physiology at intubation, worst value where measured"), blank, "")
 for (v in names(PHYS_LABELS)) row_cont(PHYS_LABELS[[v]], df[[v]], dec = PHYS_DEC[[v]], sub = TRUE)
 row_bin("Any vasopressor", df$nee > 0, sub = TRUE)
+if (ADJUST_SET == "current") row_bin("CRRT, 24 h before to 4 h after intubation", df$crrt_at_intubation == 1, sub = TRUE)
 row_cont("Norepinephrine equivalent, mcg/kg/min, if any",
          ifelse(df$nee > 0, df$nee, NA_real_), dec = 2, sub = TRUE)
 emit(bold("Not measured in the window"), blank, "")
@@ -451,6 +484,7 @@ ter <- unique(df[, c("unit_id", "qclif", "tertile")])
 ter$n <- as.integer(table(df$unit_id)[ter$unit_id])
 ter <- ter[order(ter$qclif), ]
 write.csv(ter, file.path(out, "table1_tertiles.csv"), row.names = FALSE)
+}
 lap("unit effects and Table 1")
 
 
@@ -529,13 +563,13 @@ if (FULL) {
   # share of the unit variance that is between sites.
   STEPS <- list(
     site                = if (POOLED) "site",
-    patient             = c("age_z", "cci_poa"),
-    physiology          = PHYS_TERMS,
+    patient             = c("age_z", "race_group", "bmi_category", "cci_poa"),
+    physiology          = c(PHYS_TERMS, "crrt_at_intubation"),
     intubation_setting  = c("hours_to_intubation", "location_at_intubation",
                             "procedural_within_24h"),
     limited_code_status = "limited_code_status",
     admission_type      = "admission_type")
-  STEPS <- Filter(length, lapply(STEPS, setdiff, CONSTANT))
+  STEPS <- Filter(length, lapply(STEPS, intersect, ADJUST))   # ADJUST already lacks CONSTANT
   BLOCKS <- setNames(Reduce(c, STEPS, accumulate = TRUE), names(STEPS))
   # Every primary term is claimed by exactly one step, so the last block IS the primary model.
   stopifnot(!anyDuplicated(unlist(STEPS)), setequal(BLOCKS[[length(BLOCKS)]], ADJUST))
@@ -705,19 +739,46 @@ writeLines(c(
 # many times, over an hour per model, so it runs for m2 in the primary cohort only: m2 carries the
 # adjusted MOR, and m3's adds nothing its point estimate does not. Elsewhere the columns are NA.
 # A failure is reported, not fatal.
+# CLIF_FAST profiles only just past the 95% cutoff, in steps of a third of it rather than an
+# eighth, so the interval is spline-interpolated from far fewer refits.
+PROFILE_ARGS <- if (FAST) list(alphamax = 0.04, delta.cutoff = 1 / 3) else list()
 sd_ci <- function(m) tryCatch(
-  unname(confint(m, parm = "theta_", method = "profile", oldNames = FALSE)[1, ]),
+  unname(do.call(confint, c(list(m, parm = "theta_", method = "profile", oldNames = FALSE),
+                            PROFILE_ARGS))[1, ]),
   error = function(e) {
     message("profile interval for the unit SD failed: ", conditionMessage(e))
     c(NA_real_, NA_real_)
   })
 ci_sd <- matrix(NA_real_, nrow = 3, ncol = 2)
-if (FULL) { ci_sd[icc$model == "m2", ] <- sd_ci(m2); lap("profile CI m2") }
+if (PRIMARY) { ci_sd[icc$model == "m2", ] <- sd_ci(m2); lap("profile CI m2") }
 icc$between_unit_var_lo <- ci_sd[, 1]^2
 icc$between_unit_var_hi <- ci_sd[, 2]^2
 icc$mor_lo <- mor_of_sd(ci_sd[, 1])
 icc$mor_hi <- mor_of_sd(ci_sd[, 2])
 write.csv(icc, file.path(out, "icc.csv"), row.names = FALSE)
+
+# Every number the abstract quotes, from the objects above. Predicted mortality at the 10th and
+# 90th percentile ICU is the cohort-mean patient with the random intercept at those quantiles.
+sc <- coefs[coefs$model == "m3" & coefs$term == "qclif_centered", ]
+pct <- 100 * plogis(eta_fixed + qnorm(c(0.1, 0.9)) * sqrt(icc$between_unit_var[2]))
+ab <- c(
+  patients = nrow(df), deaths = sum(df$died), mortality_pct = 100 * mean(df$died),
+  icus = nrow(unit_tab),
+  unadjusted_mortality_min_pct = 100 * min(unit_tab$mortality),
+  unadjusted_mortality_max_pct = 100 * max(unit_tab$mortality),
+  m1_mor = icc$mor[1],
+  m2_mor = icc$mor[2], m2_mor_lo = icc$mor_lo[2], m2_mor_hi = icc$mor_hi[2],
+  m2_lrt_p = icc$lrt_p[2],
+  predicted_mortality_p10_icu_pct = pct[1], predicted_mortality_p90_icu_pct = pct[2],
+  icus_worse_survival = sum(cat_tab$group == "Below average"),
+  icus_better_survival = sum(cat_tab$group == "Above average"),
+  score_or_per_point = sc$OR, score_or_lo = sc$lo, score_or_hi = sc$hi, score_p = sc$p,
+  m3_mor = icc$mor[3],
+  between_unit_var_m2 = icc$between_unit_var[2], between_unit_var_m3 = icc$between_unit_var[3])
+write.csv(data.frame(metric = names(ab), value = signif(unname(ab), 5),
+                     cohort = cohort, adjustment = ADJUST_SET,
+                     profile_grid = if (FAST) "coarse (CLIF_FAST)" else "default"),
+          file.path(out, "abstract_numbers.csv"), row.names = FALSE)
 
 TIMES[nrow(TIMES) + 1, ] <- list("total", sum(TIMES$seconds))
 write.csv(TIMES, file.path(out, "timings.csv"), row.names = FALSE)

@@ -208,3 +208,49 @@ def test_admission_type_takes_first_hospitalization_and_fills_unknown():
 def test_other_code_status_is_not_limited():
     s = pd.Series(["Other", "other ", "DNAR"])
     assert cov.limited_code_status(s).tolist() == [0, 0, 1]
+
+
+def test_race_group_maps_mcide_and_missing():
+    s = pd.Series(["White", "Black or African American", "Asian", " other", "Unknown", None,
+                   "American Indian or Alaska Native"])
+    assert cov.race_group(s).tolist() == ["white", "black", "other", "other", "unknown",
+                                          "unknown", "other"]
+
+
+def test_race_group_refuses_unclassified():
+    with pytest.raises(ValueError, match="RACE_GROUPS"):
+        cov.race_group(pd.Series(["White", "Black"]))
+
+
+def test_bmi_and_who_bands_are_left_closed():
+    w = pd.Series([50.0, 25.0, 30.0, 40.0, 80.0, None, 500.0])
+    b = cov.bmi(w, pd.Series([100.0] * 6 + [100.0]))
+    assert b.iloc[:5].tolist() == [50.0, 25.0, 30.0, 40.0, 80.0]
+    assert b.iloc[5:].isna().all()
+    cats = cov.bmi_category(pd.Series([18.4, 18.5, 24.99, 25.0, 30.0, 40.0, np.nan]))
+    assert cats.tolist() == ["< 18.5", "18.5-24.9", "18.5-24.9", "25-29.9", "30-39.9", ">= 40",
+                             cov.MISSING]
+
+
+def test_bmi_is_missing_without_height_or_weight():
+    b = cov.bmi(pd.Series([70.0, None]), pd.Series([None, 170.0]))
+    assert b.isna().all()
+    assert cov.bmi_category(b).eq(cov.MISSING).all()
+
+
+def test_crrt_in_window_bounds_inclusive_and_requires_therapy(cohort):
+    # intubations at 10, 5, 50, 3 h; window [-24 h, +4 h]
+    crrt = pd.DataFrame({
+        "encounter_block": ["1", "2", "3", "3", "4"],
+        "recorded_dttm": [ts(10 - 24), ts(5 + 4.01), ts(50 + 4), ts(40), ts(2)],
+        "crrt_mode_category": ["CVVHDF", "CVVH", None, None, None],
+        "dialysate_flow_rate": [None, None, 2000.0, None, None],
+    })
+    assert cov.crrt_in_window(cohort, crrt, pd.Timedelta(hours=24),
+                              pd.Timedelta(hours=4)).tolist() == [1, 0, 1, 0]
+
+
+def test_crrt_in_window_needs_a_mode_or_flow_column(cohort):
+    crrt = pd.DataFrame({"encounter_block": ["1"], "recorded_dttm": [ts(10)]})
+    with pytest.raises(ValueError, match="neither"):
+        cov.crrt_in_window(cohort, crrt, pd.Timedelta(hours=24), pd.Timedelta(hours=4))

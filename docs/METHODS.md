@@ -165,8 +165,8 @@ covariates are complete by construction, which stage 7 and stage 8 both assert.
 attributed ICU: `m1` null, `m2` adding the primary adjustment, `m3` adding the unit score centred
 on the mean of the **unit** values so its coefficient reads per 1-point increase.
 
-**Primary adjustment.** Standardised age, physiology at intubation, and six case-mix covariates
-anchored at the first intubation.
+**Primary adjustment.** Standardised age, physiology at intubation, CRRT at intubation, and eight
+case-mix covariates anchored at the first intubation.
 
 *Physiology* replaces the SOFA total, so severity enters as measured values rather than a score
 built from cut-offs. Each value is the worst in the SOFA window (24 h before to 4 h after
@@ -207,13 +207,17 @@ The remaining covariates are built in stage 7 (`common/covariates.py`):
 | `procedural_within_24h` | Any `procedural` ADT stay overlapping the 24 h before intubation — the post-operative case mix | 0 |
 | `limited_code_status` | Last `code_status_category` starting during the current admission (from `admission_dttm`) and at or before intubation is a DNR-type order (DNR, DNAR, UDNR, DNR/DNI, DNAR/DNI, AND). Full and no recorded order form one level: recording of any order varies by year and by unit, so separating them would adjust for documentation practice. Orders after intubation are excluded as mediators, and orders from earlier admissions are excluded because CLIF keys `code_status` by patient, so an old order would otherwise still count. `Other` is classed as not limited, since it does not state a limitation. Any category in neither set stops stage 7 until classified | 0 |
 | `admission_type` | `admission_type_category` of the encounter's first hospitalization, recoded in stage 8: `other` → `direct` (sparse, similar crude mortality). `osh` and `facility` stay separate because facility admissions are a distinctly sicker group where both are used, although one site codes most transfers as `facility`. Stage 7 keeps the raw categories | `ed` |
+| `race_group` | `patient.race_category`: White → `white`, Black or African American → `black`, the other mCIDE races and `Other` → `other`, `Unknown` or missing → `unknown`. Unknown is kept apart from Other because missing race is largely a recording practice that varies by site. An unrecognized label stops stage 7 | `white` |
+| `bmi_category` | Weight / height² from the first `weight_kg` (30–300 kg) and first `height_cm` (within the LTVV height range) in the stay, the same values behind predicted body weight. WHO bands, left-closed: < 18.5, 18.5–24.9, 25–29.9, 30–39.9, ≥ 40; a BMI outside 10–100 or a missing input is `Missing`, its own level | `18.5-24.9` |
+| `crrt_at_intubation` | Any `crrt_therapy` row carrying a mode or a flow from 24 h before to 4 h after intubation, the SOFA window. CRRT started later is downstream of the unit's care and is not adjusted for. Enters with the physiology block, since it marks renal failure that dialysed creatinine understates | 0 |
 
 The covariates were chosen after `code/07b_covariate_probe.py` tabulated each candidate's coverage
 by unit and year; the probe reports coverage and crude mortality only, not model fit. Calendar year
 was considered and not included.
 
 **Covariate blocks** (`covariate_blocks.csv`, primary cohort only) add the covariates
-cumulatively in a fixed order — site (pooled only) → age and `cci_poa` → physiology → intubation
+cumulatively in a fixed order — site (pooled only) → age, race, BMI and `cci_poa` → physiology
+and CRRT → intubation
 setting (time, location, procedural stay) → limited code status → admission type, the last being
 the primary adjustment — and report, per block, the between-unit variance and MOR with those
 covariates and no score, and the share of the null variance they remove. Every primary term is

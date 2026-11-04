@@ -58,12 +58,15 @@ REQUIRED = ["patient_id", "died", "unit_name", "unit_id", "qclif", "age_at_admis
             "icu_hours_in_unit", "discharge_category", "sex_category", "race_category",
             "ethnicity_category", "sofa_resp", "sofa_coag", "sofa_liver", "sofa_cv_97",
             "sofa_cns", "sofa_renal", "pf", "sf", "oxy_source", "map", "nee", "gcs_pre",
-            "platelet_count", "bilirubin_total", "creatinine"]
+            "platelet_count", "bilirubin_total", "creatinine", "race_group", "bmi_category",
+            "bmi", "crrt_at_intubation"]
 # Same list as MODEL_COVARIATES in code/07_analysis_dataset.py; tests/test_pool_sites.py asserts it.
 MODEL_COVARIATES = ["cci_poa", "hours_to_intubation", "location_at_intubation",
-                    "procedural_within_24h", "limited_code_status", "admission_type"]
+                    "procedural_within_24h", "limited_code_status", "admission_type",
+                    "race_group", "bmi_category", "crrt_at_intubation"]
+# Same levels as REF in code/08_outcome_model.R.
 REFERENCE_LEVELS = {"hours_to_intubation": "0-24 h", "location_at_intubation": "icu",
-                    "admission_type": "ed"}
+                    "admission_type": "ed", "race_group": "white", "bmi_category": "18.5-24.9"}
 
 
 class Log:
@@ -236,7 +239,8 @@ def main() -> int:
     log(f"    pooled: {len(pooled_rows):,} patients, {pooled_panel['unit_name'].nunique()} units")
 
     tabs = [cov.tabulate(pooled_rows, v, by="site") for v in REFERENCE_LEVELS]
-    tabs.append(cov.tabulate(pooled_rows, "limited_code_status", by="site"))
+    tabs += [cov.tabulate(pooled_rows, v, by="site")
+             for v in ("limited_code_status", "crrt_at_intubation")]
     table = cov.suppress(pd.concat(tabs, ignore_index=True), threshold)
     log(f"\n[covariate levels by site] counts below {threshold} suppressed")
     for (v, g), t in table.groupby(["variable", "group"], sort=False):

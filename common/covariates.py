@@ -28,6 +28,25 @@ LOCATION_OTHER = "ward_other"
 LIMITED_CODE = {"dnr", "dnar", "udnr", "dnr/dni", "dnar/dni", "and"}
 NOT_LIMITED_CODE = {"full", "presume full", "other", NONE_RECORDED.lower()}
 
+# mCIDE race_category, lowercased. An unrecognized label stops stage 7 rather than defaulting to
+# "other", so a site-specific spelling of Black or White cannot be silently miscoded.
+RACE_GROUPS = {
+    "white": "white",
+    "black or african american": "black",
+    "asian": "other",
+    "american indian or alaska native": "other",
+    "native hawaiian or other pacific islander": "other",
+    "other": "other",
+    "unknown": "unknown",
+}
+
+BMI_BINS = [-np.inf, 18.5, 25, 30, 40, np.inf]
+BMI_LABELS = ["< 18.5", "18.5-24.9", "25-29.9", "30-39.9", ">= 40"]
+BMI_PLAUSIBLE = (10, 100)
+
+CRRT_FLOWS = ("pre_filter_replacement_fluid_rate", "post_filter_replacement_fluid_rate",
+              "dialysate_flow_rate", "ultrafiltration_out")
+
 
 def attach_block(df: pd.DataFrame, mapping: pd.DataFrame, blocks) -> pd.DataFrame:
     """Key a hospitalization-level table by `encounter_block`, keeping only `blocks`. `mapping`
@@ -57,6 +76,53 @@ def limited_code_status(status: pd.Series) -> pd.Series:
         raise ValueError(f"code_status_category values in neither the limited nor the "
                          f"not-limited set: {unknown}; classify them in common/covariates.py")
     return s.isin(LIMITED_CODE).astype(int)
+
+
+def race_group(race: pd.Series) -> pd.Series:
+    """White, black, other or unknown; a missing race is unknown."""
+    s = race.astype("string").str.strip().str.lower()
+    unknown = sorted(set(s.dropna()) - set(RACE_GROUPS))
+    if unknown:
+        raise ValueError(f"race_category values not in RACE_GROUPS: {unknown}; "
+                         f"classify them in common/covariates.py")
+    return s.map(RACE_GROUPS).fillna("unknown").astype(object).rename("race_group")
+
+
+def bmi(weight_kg: pd.Series, height_cm: pd.Series) -> pd.Series:
+    """kg/m^2, NaN where either input is absent or the result is outside BMI_PLAUSIBLE."""
+    w = pd.to_numeric(weight_kg, errors="coerce").astype(float)
+    h = pd.to_numeric(height_cm, errors="coerce").astype(float)
+    b = w / (h / 100) ** 2
+    return b.where(b.between(*BMI_PLAUSIBLE)).rename("bmi")
+
+
+def bmi_category(b: pd.Series) -> pd.Series:
+    """WHO bands, left-closed (25.0 is overweight), with an absent BMI as its own level."""
+    cat = pd.cut(b, BMI_BINS, labels=BMI_LABELS, right=False).astype(object)
+    return cat.where(b.notna(), MISSING).rename("bmi_category")
+
+
+def crrt_in_window(cohort: pd.DataFrame, crrt: pd.DataFrame, before: pd.Timedelta,
+                   after: pd.Timedelta) -> pd.Series:
+    """1 if any crrt_therapy row in [intubation - before, intubation + after] carries a mode or a
+    flow; a row with neither records a device, not therapy. `crrt` must be keyed by
+    `encounter_block` (see attach_block)."""
+    flows = [c for c in CRRT_FLOWS if c in crrt.columns]
+    mode = [c for c in ("crrt_mode_category",) if c in crrt.columns]
+    if not flows and not mode:
+        raise ValueError("crrt_therapy has neither crrt_mode_category nor any flow column")
+    c = crrt[["encounter_block", "recorded_dttm"] + flows + mode].copy()
+    c["recorded_dttm"] = attr.as_ns(c["recorded_dttm"])
+    active = np.zeros(len(c), dtype=bool)
+    for f in flows:
+        active |= pd.to_numeric(c[f], errors="coerce").notna().to_numpy()
+    for f in mode:
+        active |= c[f].notna().to_numpy()
+    m = _anchored(cohort, c[active], "encounter_block", ["recorded_dttm"])
+    hit = (m["recorded_dttm"] >= m["t"] - before) & (m["recorded_dttm"] <= m["t"] + after)
+    out = np.zeros(len(cohort), dtype=int)
+    out[m.loc[hit, "_row"].unique()] = 1
+    return pd.Series(out, index=cohort.index, name="crrt_at_intubation")
 
 
 def admission_type(cohort: pd.DataFrame, hosp: pd.DataFrame) -> pd.Series:

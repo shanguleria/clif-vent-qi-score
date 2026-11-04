@@ -29,7 +29,8 @@ def _site_rows(pool, n=3, unit="N1"):
     d.update(patient_id=[str(i) for i in range(n)], unit_name=[unit] * n, unit_id=["Unit 1"] * n,
              hours_to_intubation=["0-24 h"] * n, location_at_intubation=["icu"] * n,
              admission_type=["ed"] * n, died=[0] * n, procedural_within_24h=[0] * n,
-             limited_code_status=[0] * n)
+             limited_code_status=[0] * n, race_group=["white"] * n,
+             bmi_category=["18.5-24.9"] * n, crrt_at_intubation=[0] * n)
     return pd.DataFrame(d)
 
 
@@ -40,6 +41,12 @@ PROV = {"definition_version": "v1", "clif_version": "2.1.0", "upstream_sha": "f5
 def test_model_covariates_match_stage7(pool):
     stage07 = _load("stage07_for_7c", "code/07_analysis_dataset.py")
     assert pool.MODEL_COVARIATES == stage07.MODEL_COVARIATES
+
+
+def test_reference_levels_are_real_levels(pool):
+    from common import covariates as cov
+    assert pool.REFERENCE_LEVELS["race_group"] in set(cov.RACE_GROUPS.values())
+    assert pool.REFERENCE_LEVELS["bmi_category"] in cov.BMI_LABELS
 
 
 def test_letters_follow_member_order(pool):

@@ -15,7 +15,8 @@ it marks.
 
 The case-mix covariates in MODEL_COVARIATES (present-on-admission Charlson, admission-to-intubation
 time, location at intubation, a procedural stay in the prior 24 h, limited code status, admission
-type) are built in `common/covariates.py` and carried in the extended frame, which stage 8 reads.
+type, race group, BMI category, CRRT in the SOFA window) are built in `common/covariates.py` and
+carried in the extended frame, which stage 8 reads.
 
 Writes to intermediate_phi/analysis/: the eight columns, an extended frame with covariates and
 diagnostics, and missingness reports per covariate, per SOFA component and per unit.
@@ -43,6 +44,7 @@ from common import sofa_crrt                                           # noqa: E
 
 from clif_dash import stage                                            # noqa: E402
 from clif_dash.upstream import clif_io                                 # noqa: E402
+from clif_dash.upstream import metrics as upstream_metrics             # noqa: E402
 
 warnings.filterwarnings("ignore", message=".*generic.*unit for NumPy timedelta.*")
 
@@ -61,8 +63,10 @@ QCLIF_SCORE = "score_core"
 REQUIRED_EXTENDED = ["sex_category", "race_category", "ethnicity_category"]
 
 # The primary adjustment beyond age, sofa and cci, all anchored at the first intubation.
+# code/07c_pool_sites.py carries the same list; tests/test_pool_sites.py asserts it.
 MODEL_COVARIATES = ["cci_poa", "hours_to_intubation", "location_at_intubation",
-                    "procedural_within_24h", "limited_code_status", "admission_type"]
+                    "procedural_within_24h", "limited_code_status", "admission_type",
+                    "race_group", "bmi_category", "crrt_at_intubation"]
 
 POA_COLUMN = "poa_present"
 
@@ -128,6 +132,35 @@ def dominant_icu(cohort, icu) -> pd.DataFrame:
     top = per.drop_duplicates("encounter_block").rename(columns={"hours": "icu_hours_in_unit"})
     total = per.groupby("encounter_block")["hours"].sum().rename("icu_hours_total")
     return top.merge(n_units, on="encounter_block").merge(total, on="encounter_block")
+
+
+def height_weight(cfg, mapping, site) -> pd.DataFrame:
+    """Per block, the first height and first weight in the stay, from upstream
+    `metrics.first_height` / `first_weight`, so BMI uses the height behind predicted body weight.
+    The vitals table is too large to read whole; only the two categories for the cohort's
+    hospitalizations are scanned. `mapping` carries string ids and normalized blocks."""
+    import duckdb
+    path = cfg.table_path("vitals")
+    if not path.exists():
+        raise FileNotFoundError(f"BMI needs {path}")
+    con = duckdb.connect()
+    con.register("ids", mapping[["hospitalization_id"]].drop_duplicates())
+    v = con.execute(f"""
+        SELECT CAST(s.hospitalization_id AS VARCHAR) AS hospitalization_id, s.recorded_dttm,
+               lower(trim(CAST(s.vital_category AS VARCHAR))) AS vital_category,
+               TRY_CAST(s.vital_value AS DOUBLE) AS vital_value
+        FROM read_parquet('{path}') s
+        JOIN ids ON CAST(s.hospitalization_id AS VARCHAR) = ids.hospitalization_id
+        WHERE lower(trim(CAST(s.vital_category AS VARCHAR))) IN ('height_cm', 'weight_kg')
+    """).df()
+    con.close()
+    v = stage.clif_conventions(v)
+    lo, hi = bc.decision_value("ltvv", "height_range_cm", site)
+    h = upstream_metrics.first_height(v, mapping, lo, hi)["height_cm"]
+    w = upstream_metrics.first_weight(v, mapping).rename("weight_kg")
+    out = pd.concat([h, w], axis=1).rename_axis("encounter_block").reset_index()
+    out["encounter_block"] = attr.norm_block(out["encounter_block"])
+    return out
 
 
 def poa_mask(flag: pd.Series) -> np.ndarray:
@@ -311,8 +344,18 @@ def main() -> int:
     cs = cs[cs["patient_id"].astype(str).isin(set(cohort["patient_id"].astype(str)))]
     cohort["code_status_before_intubation"] = cov.code_status_before(cohort, cs)
     cohort["limited_code_status"] = cov.limited_code_status(cohort["code_status_before_intubation"])
+    cohort["race_group"] = cov.race_group(cohort["race_category"])
+    cohort = cohort.merge(height_weight(cfg, mp, site), on="encounter_block", how="left")
+    cohort["bmi"] = cov.bmi(cohort["weight_kg"], cohort["height_cm"])
+    cohort["bmi_category"] = cov.bmi_category(cohort["bmi"])
+    print(f"       height {100 * cohort['height_cm'].notna().mean():.1f}%, "
+          f"weight {100 * cohort['weight_kg'].notna().mean():.1f}%, "
+          f"plausible BMI {100 * cohort['bmi'].notna().mean():.1f}%")
+    crrt = cov.attach_block(stage.read_whole_table(cfg, "crrt_therapy"), mp, blocks)
+    cohort["crrt_at_intubation"] = cov.crrt_in_window(cohort, crrt, SOFA_BEFORE, SOFA_AFTER)
     for c in ("location_at_intubation", "procedural_within_24h", "hours_to_intubation",
-              "admission_type", "limited_code_status"):
+              "admission_type", "limited_code_status", "race_group", "bmi_category",
+              "crrt_at_intubation"):
         print(f"       {c}: {cohort[c].value_counts(dropna=False).sort_index().to_dict()}")
 
     # ---- 5. SOFA over the intubation window ---------------------------------
@@ -374,6 +417,7 @@ def main() -> int:
                 "icu_hours_in_unit", "icu_hours_total", "n_icus", "first_episode_hours",
                 "sex_category", "race_category", "ethnicity_category",
                 *MODEL_COVARIATES, "code_status_before_intubation",
+                "height_cm", "weight_kg", "bmi",
                 "sofa_total_raw", "sofa_resp_raw", "sofa_n_components", "oxy_source", "gcs_pre"]
                + comp + sofa_crrt.COMPONENT_VALUES + inputs)
     ext_cols = [c for c in dict.fromkeys(extended) if c in cohort.columns]
@@ -412,6 +456,16 @@ def main() -> int:
             "limited_code_status": f"last code_status order at or before intubation in "
                                    f"{sorted(cov.LIMITED_CODE)}",
             "admission_type": "admission_type_category of the block's first hospitalization",
+            "race_group": {**cov.RACE_GROUPS, "<missing>": "unknown"},
+            "bmi_category": {"bands_left_closed": cov.BMI_LABELS,
+                             "plausible_bmi": list(cov.BMI_PLAUSIBLE),
+                             "inputs": "first weight_kg (upstream first_weight) and first "
+                                       "height_cm within ltvv.height_range_cm (upstream "
+                                       "first_height) in the stay",
+                             "absent": cov.MISSING},
+            "crrt_at_intubation": f"any crrt_therapy row with a mode or flow in "
+                                  f"[-{SOFA_BEFORE.total_seconds() / 3600:g} h, "
+                                  f"+{SOFA_AFTER.total_seconds() / 3600:g} h] around intubation",
         },
         "complete_cases": int(len(complete)),
     }, indent=2, default=str))

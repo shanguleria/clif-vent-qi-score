@@ -91,6 +91,9 @@ CLIF **spec version 2.1**. The cohort and all four metrics are built from the ta
 | `hospital_diagnosis` | `hospitalization_id`, `diagnosis_code`, `diagnosis_code_format` = `icd10cm` (Charlson), **`poa_present`** = 1 (present-on-admission Charlson; required) |
 | `adt` | `location_category` spanning intubation (`ed` / `icu` / `procedural` kept, others pooled); `procedural` in the 24 h before intubation |
 | `hospitalization` | `admission_type_category` |
+| `patient` | `race_category`, grouped as White (reference) / Black or African American / other mCIDE races and `Other` / `Unknown` or missing. Any other value stops stage 7 until it is classified in `common/covariates.py` |
+| `vitals` | `vital_category` = `height_cm` (first in the stay within the LTVV height range) and `weight_kg` (first in the stay, 30–300 kg), for BMI in WHO bands (< 18.5, 18.5–24.9 reference, 25–29.9, 30–39.9, ≥ 40) plus `Missing` |
+| `crrt_therapy` | `hospitalization_id`, `recorded_dttm`, `crrt_mode_category` and/or the flow columns (`dialysate_flow_rate`, pre/post-filter replacement rates, `ultrafiltration_out`); CRRT = any row with a mode or flow from 24 h before to 4 h after intubation. A missing `clif_crrt_therapy` file stops stage 7 |
 | `code_status` | `patient_id`, `start_dttm`, `code_status_category`; the last order between admission and intubation (earlier admissions ignored). Limited = DNR, DNAR, UDNR, DNR/DNI, DNAR/DNI, AND; not limited = Full, Presume Full, Other, none recorded. Any other value stops stage 7 until it is classified in `common/covariates.py` |
 | `patient_assessments` | `hospitalization_id`, `recorded_dttm`, `assessment_category` = `gcs_total`, `numerical_value`; the worst GCS in the 24 h before intubation (primary physiology). The other physiology terms reuse the SOFA inputs: `labs` `po2_arterial`, `platelet_count`, `bilirubin_total`, `creatinine`; `vitals` `spo2`, `map`; vasopressors as norepinephrine equivalents. A missing `clif_patient_assessments` file stops stage 7 |
 
@@ -266,6 +269,19 @@ sensitivity analyses and covariate blocks run only for the primary cohort, `earl
 CLIF_COHORT=early_nonop Rscript code/08_outcome_model.R
 ```
 
+Two switches trade completeness for speed. They write to a suffixed folder
+(`08_outcome_model_<cohort>_fast[_original]/`), so a full run's outputs are never overwritten:
+
+- `CLIF_FAST=1` fits m1–m3 and writes the unit effects, figures, `icc.csv` and
+  `abstract_numbers.csv`. It skips Table 1, the sensitivity analyses and the covariate blocks, and
+  profiles the primary cohort's MOR interval on a coarser grid.
+- `CLIF_ADJUST=original` drops race, BMI and CRRT from the adjustment, so stage-7 data built
+  before they were added can still be fit.
+
+```bash
+CLIF_FAST=1 ./run_pooled.sh --model-only --cohort early_nonop,early_nonop_hypoxemia
+```
+
 To redraw only the caterpillar plot from a finished stage 8 (no refit), run
 `Rscript code/caterpillar.R` with the same `CLIF_SITE`.
 
@@ -350,7 +366,7 @@ every run.
 | 3 | `code/03_build_panel.py` | `panel/contributions.parquet` + `final_no_phi/{unit,unit_period}_panel.{csv,parquet}` at both grains |
 | 4 | `code/04_exposure_assignment.py` | `exposure/exposure_{unit,unit_period}_{long,primary}.parquet` — per-patient exposure |
 | 5 | `code/05_verify_equivalence.py` | `final_no_phi/verification.json` — cross-run equivalence vs the dashboard's persisted output |
-| 7 | `code/07_analysis_dataset.py` | `analysis/analysis_dataset.{csv,parquet}` — one row per patient for the outcome model, plus `_extended` with demographics, the case-mix covariates, SOFA components, physiology values (incl. pre-intubation GCS) and ICU-stay diagnostics |
+| 7 | `code/07_analysis_dataset.py` | `analysis/analysis_dataset.{csv,parquet}` — one row per patient for the outcome model, plus `_extended` with demographics, the case-mix covariates (incl. race group, height, weight, BMI and CRRT at intubation), SOFA components, physiology values (incl. pre-intubation GCS) and ICU-stay diagnostics |
 | 7b | `code/07b_covariate_probe.py` | `final_no_phi/07b_covariate_probe/covariate_coverage.csv` + `logs/07b_covariate_probe.log` — on demand: coverage of candidate covariates (location at intubation, recent procedural stay, admission type, pre-intubation code status, admission-to-intubation time, Charlson conditions with and without present-on-admission, primary-diagnosis coverage and ICD-10 chapter) in the model sample, plus which hospital each ICU sits in (anonymized) |
 | 7c | `code/07c_pool_sites.py` | `output/pooled/` — on demand, multi-site: stacks member sites' stage-7 patient rows and unit panels (site-prefixed keys, anonymized labels) after checking versions, build code, required columns and reference levels; `./run_pooled.sh` runs it and then `CLIF_SITE=pooled Rscript code/08_outcome_model.R` |
 | 6 | `code/06_compare_tiers.py` | `tier_comparison/` — on demand, proves a cold build reproduces the cached-tier panel exactly |
