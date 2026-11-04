@@ -231,7 +231,10 @@ distribution's fixed individual-level variance and reads low by construction. Fo
   space, so the p-value is from a 50:50 mixture of χ²₀ and χ²₁ (Self & Liang 1987), half the
   naive χ²₁ p-value;
 - a 95% profile-likelihood interval for the unit SD, carried to the variance and the MOR, both
-  monotone in it. A profile that fails to converge is reported as missing, not fatal.
+  monotone in it. A profile that fails to converge is reported as missing, not fatal. Profiling
+  refits the model many times, so it is computed only for `m2` in the primary cohort
+  (`early_nonop`), the model that carries the adjusted MOR; every other model and cohort reports
+  the variance and MOR as point estimates, with the interval columns missing.
 
 **The caterpillar plot** (`unit_caterpillar.png`, `unit_effects.csv`) shows each unit's
 conditional mode from `m2`, the adjusted model *without* the score, so it displays the variation

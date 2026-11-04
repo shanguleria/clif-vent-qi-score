@@ -29,3 +29,6 @@ renv/library/
 renv/local/
 renv/cellar/
 renv/staging/
+
+# drafting files, kept local
+docs/abstract_draft.md

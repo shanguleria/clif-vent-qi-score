@@ -10,6 +10,9 @@ library(arrow)
 library(lme4)
 library(ggplot2)
 source(file.path("code", "caterpillar.R"))
+# Print each warning as it occurs, beside the [time] line of its section, instead of a deferred
+# "There were 50 or more warnings" with the text lost.
+options(warn = 1)
 
 site <- Sys.getenv("CLIF_SITE", "uchicago")
 cohort <- Sys.getenv("CLIF_COHORT", "all")
@@ -180,7 +183,9 @@ df$age_z <- as.numeric(scale(df$age_at_admission))
 unit_q <- df$qclif[!duplicated(df$unit_name)]
 df$qclif_centered <- df$qclif - mean(unit_q)   # per 1-point increase
 
-ctrl <- glmerControl(optimizer = "bobyqa")
+# lme4's default maxfun is below bobyqa's recommended 10 * npar^2 for the ~45-parameter primary
+# model, which then stops on the evaluation limit rather than converging.
+ctrl <- glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5))
 # Cached on the exact rows and terms, so the full-cohort null and the primary specification are fit
 # once and the sensitivity rows and covariate blocks that repeat them reuse m1-m3. Derived columns
 # (age_z, qclif_centered) are functions of the rows, so the same rows give the same model.
@@ -254,21 +259,6 @@ lrt <- function(m, terms) {
 icc$lrt_chisq <- c(lrt(m1, "1"), lrt(m2, ADJUST), lrt(m3, c(ADJUST, "qclif_centered")))
 icc$lrt_p <- 0.5 * pchisq(icc$lrt_chisq, df = 1, lower.tail = FALSE)
 lap("coefficients and variance LRT")
-# 95% profile-likelihood interval for the unit SD, carried to the variance and the MOR, both
-# monotone in it. Profiling refits the model many times; a failure is reported, not fatal.
-sd_ci <- function(m) tryCatch(
-  unname(confint(m, parm = "theta_", method = "profile", oldNames = FALSE)[1, ]),
-  error = function(e) {
-    message("profile interval for the unit SD failed: ", conditionMessage(e))
-    c(NA_real_, NA_real_)
-  })
-ci_sd <- do.call(rbind, Map(function(m, nm) { ci <- sd_ci(m); lap(paste("profile CI", nm)); ci },
-                         list(m1, m2, m3), c("m1", "m2", "m3")))
-icc$between_unit_var_lo <- ci_sd[, 1]^2
-icc$between_unit_var_hi <- ci_sd[, 2]^2
-icc$mor_lo <- mor_of_sd(ci_sd[, 1])
-icc$mor_hi <- mor_of_sd(ci_sd[, 2])
-write.csv(icc, file.path(out, "icc.csv"), row.names = FALSE)
 
 writeLines(c(
   "between_unit_var  variance of the unit random intercept, LOG-ODDS scale",
@@ -284,7 +274,8 @@ writeLines(c(
   "                  effects without a random intercept; p from the 50:50 chi-square(0)/(1)",
   "                  mixture, because the null value 0 is on the boundary",
   "between_unit_var_lo/hi, mor_lo/hi  95% profile-likelihood interval for the unit SD,",
-  "                  carried to the variance and the MOR"
+  "                  carried to the variance and the MOR; m2 in the primary cohort only,",
+  "                  NA for every other model and cohort"
 ), file.path(out, "icc_readme.txt"))
 
 # Unadjusted, per unit
@@ -303,6 +294,8 @@ write.csv(transform(unit_tab, unit_name = disp(unit_name)), file.path(out, "unit
 re  <- ranef(m2, condVar = TRUE)$unit_name
 u   <- re[, 1]
 se  <- sqrt(as.numeric(attr(re, "postVar")))
+if (vc(m2) > 0 && all(u == 0))
+  stop("unit effects are all zero although the unit variance is not; m2 has been mutated")
 
 # Adjusted predicted in-hospital survival for a standard patient using cohort-mean covariate profile
 # plus each unit's random intercept.
@@ -705,6 +698,26 @@ writeLines(c(
   "covariates and no score, and the share of the unadjusted between-unit variance they remove.",
   "With this few units the order is a presentation choice, not a test.")
 ), file.path(out, "captions.md"))
+
+# 95% profile-likelihood interval for the unit SD, carried to the variance and the MOR, both
+# monotone in it. Last, because profiling leaves each model's reference-class state (@pp, @resp)
+# at the final SD it tried, so ranef() and vcov() read afterwards are wrong. It refits the model
+# many times, over an hour per model, so it runs for m2 in the primary cohort only: m2 carries the
+# adjusted MOR, and m3's adds nothing its point estimate does not. Elsewhere the columns are NA.
+# A failure is reported, not fatal.
+sd_ci <- function(m) tryCatch(
+  unname(confint(m, parm = "theta_", method = "profile", oldNames = FALSE)[1, ]),
+  error = function(e) {
+    message("profile interval for the unit SD failed: ", conditionMessage(e))
+    c(NA_real_, NA_real_)
+  })
+ci_sd <- matrix(NA_real_, nrow = 3, ncol = 2)
+if (FULL) { ci_sd[icc$model == "m2", ] <- sd_ci(m2); lap("profile CI m2") }
+icc$between_unit_var_lo <- ci_sd[, 1]^2
+icc$between_unit_var_hi <- ci_sd[, 2]^2
+icc$mor_lo <- mor_of_sd(ci_sd[, 1])
+icc$mor_hi <- mor_of_sd(ci_sd[, 2])
+write.csv(icc, file.path(out, "icc.csv"), row.names = FALSE)
 
 TIMES[nrow(TIMES) + 1, ] <- list("total", sum(TIMES$seconds))
 write.csv(TIMES, file.path(out, "timings.csv"), row.names = FALSE)
