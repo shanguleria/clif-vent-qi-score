@@ -749,36 +749,42 @@ sd_ci <- function(m) tryCatch(
     message("profile interval for the unit SD failed: ", conditionMessage(e))
     c(NA_real_, NA_real_)
   })
-ci_sd <- matrix(NA_real_, nrow = 3, ncol = 2)
-if (PRIMARY) { ci_sd[icc$model == "m2", ] <- sd_ci(m2); lap("profile CI m2") }
-icc$between_unit_var_lo <- ci_sd[, 1]^2
-icc$between_unit_var_hi <- ci_sd[, 2]^2
-icc$mor_lo <- mor_of_sd(ci_sd[, 1])
-icc$mor_hi <- mor_of_sd(ci_sd[, 2])
-write.csv(icc, file.path(out, "icc.csv"), row.names = FALSE)
-
-# Every number the abstract quotes, from the objects above. Predicted mortality at the 10th and
-# 90th percentile ICU is the cohort-mean patient with the random intercept at those quantiles.
+# Every number the abstract quotes. Predicted mortality at the 10th and 90th percentile ICU is the
+# cohort-mean patient with the random intercept at those quantiles. Written once before the
+# profile, with the MOR interval blank, and again after it, so a run stopped mid-profile still
+# leaves every point estimate.
 sc <- coefs[coefs$model == "m3" & coefs$term == "qclif_centered", ]
 pct <- 100 * plogis(eta_fixed + qnorm(c(0.1, 0.9)) * sqrt(icc$between_unit_var[2]))
-ab <- c(
-  patients = nrow(df), deaths = sum(df$died), mortality_pct = 100 * mean(df$died),
-  icus = nrow(unit_tab),
-  unadjusted_mortality_min_pct = 100 * min(unit_tab$mortality),
-  unadjusted_mortality_max_pct = 100 * max(unit_tab$mortality),
-  m1_mor = icc$mor[1],
-  m2_mor = icc$mor[2], m2_mor_lo = icc$mor_lo[2], m2_mor_hi = icc$mor_hi[2],
-  m2_lrt_p = icc$lrt_p[2],
-  predicted_mortality_p10_icu_pct = pct[1], predicted_mortality_p90_icu_pct = pct[2],
-  icus_worse_survival = sum(cat_tab$group == "Below average"),
-  icus_better_survival = sum(cat_tab$group == "Above average"),
-  score_or_per_point = sc$OR, score_or_lo = sc$lo, score_or_hi = sc$hi, score_p = sc$p,
-  m3_mor = icc$mor[3],
-  between_unit_var_m2 = icc$between_unit_var[2], between_unit_var_m3 = icc$between_unit_var[3])
-write.csv(data.frame(metric = names(ab), value = signif(unname(ab), 5),
-                     cohort = cohort, adjustment = ADJUST_SET,
-                     profile_grid = if (FAST) "coarse (CLIF_FAST)" else "default"),
-          file.path(out, "abstract_numbers.csv"), row.names = FALSE)
+write_outputs <- function(ci_sd, status) {
+  icc$between_unit_var_lo <- ci_sd[, 1]^2
+  icc$between_unit_var_hi <- ci_sd[, 2]^2
+  icc$mor_lo <- mor_of_sd(ci_sd[, 1])
+  icc$mor_hi <- mor_of_sd(ci_sd[, 2])
+  write.csv(icc, file.path(out, "icc.csv"), row.names = FALSE)
+  ab <- c(
+    patients = nrow(df), deaths = sum(df$died), mortality_pct = 100 * mean(df$died),
+    icus = nrow(unit_tab),
+    unadjusted_mortality_min_pct = 100 * min(unit_tab$mortality),
+    unadjusted_mortality_max_pct = 100 * max(unit_tab$mortality),
+    m1_mor = icc$mor[1],
+    m2_mor = icc$mor[2], m2_mor_lo = icc$mor_lo[2], m2_mor_hi = icc$mor_hi[2],
+    m2_lrt_p = icc$lrt_p[2],
+    predicted_mortality_p10_icu_pct = pct[1], predicted_mortality_p90_icu_pct = pct[2],
+    icus_worse_survival = sum(cat_tab$group == "Below average"),
+    icus_better_survival = sum(cat_tab$group == "Above average"),
+    score_or_per_point = sc$OR, score_or_lo = sc$lo, score_or_hi = sc$hi, score_p = sc$p,
+    m3_mor = icc$mor[3],
+    between_unit_var_m2 = icc$between_unit_var[2], between_unit_var_m3 = icc$between_unit_var[3])
+  write.csv(data.frame(metric = names(ab), value = signif(unname(ab), 5),
+                       cohort = cohort, adjustment = ADJUST_SET, mor_interval = status),
+            file.path(out, "abstract_numbers.csv"), row.names = FALSE)
+}
+ci_sd <- matrix(NA_real_, nrow = 3, ncol = 2)
+write_outputs(ci_sd, if (PRIMARY) "profile pending" else "not computed for this cohort")
+if (PRIMARY) {
+  ci_sd[icc$model == "m2", ] <- sd_ci(m2); lap("profile CI m2")
+  write_outputs(ci_sd, if (FAST) "profile, coarse grid (CLIF_FAST)" else "profile")
+}
 
 TIMES[nrow(TIMES) + 1, ] <- list("total", sum(TIMES$seconds))
 write.csv(TIMES, file.path(out, "timings.csv"), row.names = FALSE)
