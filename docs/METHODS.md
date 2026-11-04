@@ -195,7 +195,7 @@ one on the boundary, only distinct interior knots are kept and the term has fewe
 freedom, which stage 8 prints. Bases are built once per cohort and reused by every refit within
 it. SOFA (classic SOFA from the CLIF-epidemiology-of-CRRT calculator, vendored verbatim in
 `vendor/crrt_sofa/` at the commit its `SOURCE` file records, with the respiratory subscore
-recomputed as stage 7 describes) remains in the original adjustment and in two sensitivity rows.
+recomputed as stage 7 describes) remains in two sensitivity rows.
 
 The remaining covariates are built in stage 7 (`common/covariates.py`):
 
@@ -212,12 +212,14 @@ The covariates were chosen after `code/07b_covariate_probe.py` tabulated each ca
 by unit and year; the probe reports coverage and crude mortality only, not model fit. Calendar year
 was considered and not included.
 
-**Covariate blocks** (`covariate_blocks.csv`) add the covariates cumulatively in a fixed order —
-original adjustment (age, `cci`, SOFA) → `cci_poa` in place of `cci` → physiology in place of
-SOFA → intubation setting (time, location, procedural stay) → limited code status → admission
-type — and report, per block, the between-unit variance with covariates alone, the share of the
-null variance it removes, and the score's OR. With this few units the order is a presentation
-choice, not a test.
+**Covariate blocks** (`covariate_blocks.csv`, primary cohort only) add the covariates
+cumulatively in a fixed order — site (pooled only) → age and `cci_poa` → physiology → intubation
+setting (time, location, procedural stay) → limited code status → admission type, the last being
+the primary adjustment — and report, per block, the between-unit variance and MOR with those
+covariates and no score, and the share of the null variance they remove. Every primary term is
+claimed by exactly one step, which stage 8 asserts. With this few units the order is a
+presentation choice, not a test. SOFA enters only as the `sofa_total` and `sofa_components`
+sensitivity rows.
 
 **Between-unit variation** is reported as the raw log-odds variance, the ICC and the median odds
 ratio; the MOR is the one to quote, since the ICC's denominator carries the logistic
@@ -250,13 +252,11 @@ labels. An absent categorical value is reported as its own `Unknown` level rathe
 into another category. The p-values treat patients as independent and so ignore clustering within
 ICUs — they are descriptive. Cells are not small-cell suppressed.
 
-**Sensitivity analyses** (`sensitivity_analyses.csv`) refit the full specification under eight
-prespecified variations: the original adjustment (age, `cci`, SOFA) alone, the SOFA total in
-place of the physiology terms (the previous primary specification), the six SOFA subscores in
-place of the physiology terms (an absent subscore entering as 0, as in the total), `score_full`
-as the exposure, units meeting every `score_core` denominator floor, patients cared for in
-exactly one ICU, physiology without bilirubin (the input most dependent on whether a test was
-ordered), and patients whose first IMV episode lasted at least 24 h (`first_episode_hours`,
+**Sensitivity analyses** (`sensitivity_analyses.csv`, primary cohort only) refit the full
+specification under four variations, plus one leave-one-site-out row per site when pooled: the
+SOFA total in place of the physiology terms (the previous primary specification), the six SOFA
+subscores in place of the physiology terms (an absent subscore entering as 0, as in the total),
+patients cared for in exactly one ICU, and patients whose first IMV episode lasted at least 24 h (`first_episode_hours`,
 the episode's end minus start, so gaps shorter than the 24 h episode-gap rule count as
 ventilated). The primary cohort has no minimum IMV duration; the 24 h row checks that brief,
 mostly post-procedural ventilation is not driving the result. Each refits its **own** null
@@ -273,6 +273,9 @@ the score — so the points are not fitted to the line they are plotted against.
 `08_outcome_model_<cohort>/` and the full cohort (`all`) is unchanged. Only the outcome cohort is
 restricted: each unit's score still comes from all of its ventilated care, so the question is
 whether a unit's overall ventilator-care quality predicts outcome in the narrower group.
+`early_nonop` is the primary cohort (`PRIMARY_COHORT` in stage 8) and the only one fit with the
+sensitivity analyses and covariate blocks; `all` and `early_nonop_hypoxemia` are secondary and get
+the `m1`–`m3` chain with its variance tests, the per-unit effects, Table 1 and the figures.
 
 | Cohort | Definition |
 |---|---|
@@ -295,7 +298,7 @@ weighted mean of each unit's pooled rates, not rescaled within a site, so it is 
 sites under identical definitions — which stage 7c enforces by refusing sites whose definition
 version, CLIF major.minor version (patch releases may differ and are recorded), upstream SHA or
 row- and panel-building code differ. A **site fixed
-effect** enters every specification, including the original adjustment and each covariate block,
+effect** enters every specification, including each sensitivity row and covariate block,
 so the score's coefficient comes from differences between units within a site, and site-wide
 differences in charting or case mix are absorbed by the site term. Units keep a random intercept;
 they are uniquely keyed across sites by a site-letter prefix. Sensitivity analyses add one

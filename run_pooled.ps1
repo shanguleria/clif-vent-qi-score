@@ -4,15 +4,16 @@
 #
 # -Members a,b,c  write sites\pooled.json with these members (order sets Site A, B, ...);
 #                 without it, the existing sites\pooled.json is used
-# -Cohort a,b     stage-8 cohorts to fit, one after another (default: all). Names are the
-#                 COHORTS in code\08_outcome_model.R, e.g. all,early_nonop,early_nonop_hypoxemia
+# -Cohort a,b     stage-8 cohorts to fit, one after another (default: every COHORTS entry in
+#                 code\08_outcome_model.R, all,early_nonop,early_nonop_hypoxemia); only early_nonop
+#                 gets the sensitivity analyses and covariate blocks
 # -PoolOnly       stop after stage 7c
 # -ModelOnly      skip stage 7c and refit stage 8 on the existing pooled data
 #
 # Every member must already have run stages 0-7 (.\run_scores.ps1 -Site <member>).
 param(
   [string[]]$Members = @(),
-  [string[]]$Cohort = @("all"),
+  [string[]]$Cohort = @("all", "early_nonop", "early_nonop_hypoxemia"),
   [switch]$PoolOnly,
   [switch]$ModelOnly
 )
@@ -75,13 +76,30 @@ if ($PoolOnly) {
   exit 0
 }
 
+# Cohorts are independent fits on the same data, so they run side by side, each to its own log.
+$Logs = "output\pooled\final_no_phi\logs"
+New-Item -ItemType Directory -Force -Path $Logs | Out-Null
 $env:CLIF_SITE = "pooled"
+Write-Host ""; Write-Host "========== 08_outcome_model (pooled, cohorts in parallel) =========="
+$procs = @{}
 foreach ($c in $cohorts) {
-  Write-Host ""; Write-Host "========== 08_outcome_model (pooled, cohort $c) =========="
   $env:CLIF_COHORT = $c
-  & Rscript code\08_outcome_model.R
-  if ($LASTEXITCODE -ne 0) { throw "stage 8 failed for cohort $c (exit code $LASTEXITCODE)" }
+  $p = Start-Process -FilePath "Rscript" -ArgumentList "code\08_outcome_model.R" -NoNewWindow -PassThru `
+         -RedirectStandardOutput "$Logs\08_outcome_model_$c.log" `
+         -RedirectStandardError "$Logs\08_outcome_model_$c.err.log"
+  $null = $p.Handle   # cache the handle, or ExitCode reads back empty after exit
+  $procs[$c] = $p
+  Write-Host "  started $c -> $Logs\08_outcome_model_$c.log"
 }
+$failed = @()
+foreach ($c in $cohorts) {
+  $procs[$c].WaitForExit()
+  if ($procs[$c].ExitCode -eq 0) { Write-Host "  finished $c" } else { $failed += $c }
+}
+foreach ($c in $failed) {
+  Write-Host ">>> stage 8 failed for cohort $c; its log: Get-Content $Logs\08_outcome_model_$c.err.log -Tail 40"
+}
+if ($failed.Count -gt 0) { throw "stage 8 failed for: $($failed -join ', ')" }
 
 Write-Host ""
 Write-Host "=== done in $(Format-Hms $sw.Elapsed.TotalSeconds) - cohorts: $($cohorts -join ', ') ==="

@@ -16,6 +16,17 @@ cohort <- Sys.getenv("CLIF_COHORT", "all")
 out <- model_out_dir(site, cohort)
 dir.create(out, recursive = TRUE, showWarnings = FALSE)
 
+TIMES <- data.frame(section = character(), seconds = numeric())
+lap <- local({
+  last <- proc.time()[["elapsed"]]
+  function(section) {
+    now <- proc.time()[["elapsed"]]
+    TIMES[nrow(TIMES) + 1, ] <<- list(section, round(now - last, 1))
+    cat(sprintf("[time] %-32s %8.1f s\n", section, now - last))
+    last <<- now
+  }
+})
+
 df <- as.data.frame(read_parquet(
   file.path("output", site, "intermediate_phi", "analysis",
             "analysis_dataset_extended.parquet")))
@@ -47,6 +58,13 @@ df <- df[COHORTS[[cohort]]$keep(df), ]
 cat(sprintf("cohort '%s': %d of %d patients\n", cohort, nrow(df), n_before))
 stopifnot(nrow(df) > 0)
 COHORT_LABEL <- COHORTS[[cohort]]$label
+# The sensitivity analyses and covariate blocks are fit for the primary cohort only; the others
+# get the m1-m3 chain, its variance tests, the per-unit effects, Table 1 and the figures.
+PRIMARY_COHORT <- "early_nonop"
+stopifnot(PRIMARY_COHORT %in% names(COHORTS))
+FULL <- cohort == PRIMARY_COHORT
+PRIMARY_ONLY_FILES <- c("sensitivity_analyses.csv", "covariate_blocks.csv")
+if (!FULL) unlink(file.path(out, PRIMARY_ONLY_FILES))   # a stale copy from an earlier run would be shown
 
 # Physiology at intubation, the primary severity adjustment in place of SOFA. Each value is the
 # worst in the SOFA window (24 h before to 4 h after intubation) except GCS, the worst in the 24 h
@@ -94,9 +112,7 @@ for (v in names(PHYS_GROUPS))
               100 * if (v == "nee") mean(df$nee > 0) else mean(!is.na(df[[v]])),
               sum(grepl("_ns[0-9]+$", PHYS_GROUPS[[v]]))))
 
-# The primary adjustment. ADJUST_BASE is the original specification, kept as a sensitivity row and
-# as the first covariate block; both vectors name model terms, so age enters as age_z.
-ADJUST_BASE <- c("sofa", "cci", "age_z")
+# The primary adjustment. Entries name model terms, so age enters as age_z.
 ADJUST <- c(PHYS_TERMS, "cci_poa", "age_z", "hours_to_intubation", "location_at_intubation",
             "procedural_within_24h", "limited_code_status", "admission_type")
 ADJUST_LABEL <- paste("age, present-on-admission Charlson comorbidity index, physiology at",
@@ -128,7 +144,6 @@ for (v in names(REF)) df[[v]] <- relevel(factor(df[[v]]), ref = REF[[v]])
 POOLED <- "site" %in% names(df)
 if (POOLED) {
   df$site <- relevel(factor(df$site), ref = names(which.max(table(df$site))))
-  ADJUST_BASE <- c(ADJUST_BASE, "site")
   ADJUST <- c(ADJUST, "site")
   ADJUST_LABEL <- paste0(ADJUST_LABEL, ", with a fixed effect for site")
 }
@@ -141,27 +156,24 @@ if (length(CONSTANT)) {
   cat(sprintf("constant in cohort '%s', dropped from every model: %s\n",
               cohort, paste(CONSTANT, collapse = ", ")))
   ADJUST <- setdiff(ADJUST, CONSTANT)
-  ADJUST_BASE <- setdiff(ADJUST_BASE, CONSTANT)
   PHYS_TERMS <- setdiff(PHYS_TERMS, CONSTANT)
   PHYS_GROUPS <- lapply(PHYS_GROUPS, setdiff, CONSTANT)
   ADJUST_LABEL <- paste0(ADJUST_LABEL, " (", paste(CONSTANT, collapse = ", "),
                          " constant in this cohort, so omitted)")
 }
 
-# score_full and the per-score denominator floors live on the panel, not the analysis dataset.
-# Indexed rather than merged so row order is untouched and the fitted models cannot move.
 panel <- as.data.frame(read_parquet(
   file.path("output", site, "final_no_phi", "unit_panel.parquet")))
 prow <- match(df$unit_name, panel$unit_name)
 stopifnot(!anyNA(prow))
 # The exposure must BE the panel's score, not a copy that has drifted from it.
 stopifnot(isTRUE(all.equal(df$qclif, panel$score_core[prow])))
-for (v in c("score_full", "score_core_low", "score_full_low")) df[[v]] <- panel[[v]][prow]
 
 # Pooled unit_name is "<letter>::<site's own unit name>"; everything written uses the anonymized
 # unit_id ("Site A · Unit 3") instead.
 disp <- function(u) if (POOLED) panel$unit_id[match(u, panel$unit_name)] else u
 FIG_W <- max(7.5, 0.55 * nrow(panel))
+lap("load and prepare")
 
 # Rescale for interpretability and convergence
 df$age_z <- as.numeric(scale(df$age_at_admission))
@@ -169,12 +181,24 @@ unit_q <- df$qclif[!duplicated(df$unit_name)]
 df$qclif_centered <- df$qclif - mean(unit_q)   # per 1-point increase
 
 ctrl <- glmerControl(optimizer = "bobyqa")
-fit <- function(terms, d = df)
-  glmer(reformulate(c(terms, "(1 | unit_name)"), response = "died"),
-        data = d, family = binomial, control = ctrl)
-m1 <- fit("1")
-m2 <- fit(ADJUST)
-m3 <- fit(c(ADJUST, "qclif_centered"))
+# Cached on the exact rows and terms, so the full-cohort null and the primary specification are fit
+# once and the sensitivity rows and covariate blocks that repeat them reuse m1-m3. Derived columns
+# (age_z, qclif_centered) are functions of the rows, so the same rows give the same model.
+FITS <- list()
+FIT_KEYS <- character()
+fit <- function(terms, d = df) {
+  key <- paste(c(sort(terms), "|", rownames(d)), collapse = " ")
+  hit <- match(key, FIT_KEYS)
+  if (!is.na(hit)) return(FITS[[hit]])
+  m <- glmer(reformulate(c(terms, "(1 | unit_name)"), response = "died"),
+             data = d, family = binomial, control = ctrl)
+  FIT_KEYS <<- c(FIT_KEYS, key)
+  FITS[[length(FITS) + 1]] <<- m
+  m
+}
+m1 <- fit("1"); lap("fit m1")
+m2 <- fit(ADJUST); lap("fit m2")
+m3 <- fit(c(ADJUST, "qclif_centered")); lap("fit m3")
 
 anova(m1, m2, m3)
 summary(m3)
@@ -229,6 +253,7 @@ lrt <- function(m, terms) {
 }
 icc$lrt_chisq <- c(lrt(m1, "1"), lrt(m2, ADJUST), lrt(m3, c(ADJUST, "qclif_centered")))
 icc$lrt_p <- 0.5 * pchisq(icc$lrt_chisq, df = 1, lower.tail = FALSE)
+lap("coefficients and variance LRT")
 # 95% profile-likelihood interval for the unit SD, carried to the variance and the MOR, both
 # monotone in it. Profiling refits the model many times; a failure is reported, not fatal.
 sd_ci <- function(m) tryCatch(
@@ -237,7 +262,8 @@ sd_ci <- function(m) tryCatch(
     message("profile interval for the unit SD failed: ", conditionMessage(e))
     c(NA_real_, NA_real_)
   })
-ci_sd <- do.call(rbind, lapply(list(m1, m2, m3), sd_ci))
+ci_sd <- do.call(rbind, Map(function(m, nm) { ci <- sd_ci(m); lap(paste("profile CI", nm)); ci },
+                         list(m1, m2, m3), c("m1", "m2", "m3")))
 icc$between_unit_var_lo <- ci_sd[, 1]^2
 icc$between_unit_var_hi <- ci_sd[, 2]^2
 icc$mor_lo <- mor_of_sd(ci_sd[, 1])
@@ -432,114 +458,99 @@ ter <- unique(df[, c("unit_id", "qclif", "tertile")])
 ter$n <- as.integer(table(df$unit_id)[ter$unit_id])
 ter <- ter[order(ter$qclif), ]
 write.csv(ter, file.path(out, "table1_tertiles.csv"), row.names = FALSE)
+lap("unit effects and Table 1")
 
 
 # ---- Sensitivity analyses ----------------------------------------------------
 
-# Each variant is refit standalone, with its OWN null model, so var_explained compares like
-# with like; a subset that loses a whole unit changes the baseline it should be judged against.
-# between_unit_var_adjusted is from the covariates-only model, so it shows what the covariates
-# explain before the score is added; between_unit_var is with the score in.
-fit_one <- function(id, desc, d, exposure = "qclif", adjust = ADJUST) {
-  d <- droplevels(d[complete.cases(d[, c("died", exposure, raw_cols(adjust))]), ])
+# Each variant has its OWN null model on its own rows, so var_explained compares like with like; a
+# subset that loses a whole unit changes the baseline it should be judged against. The *_adjusted
+# columns are from the covariates-only model, the rest from the model with the score added.
+fit_one <- function(id, desc, d, adjust = ADJUST, score = TRUE) {
+  d <- droplevels(d[complete.cases(d[, c("died", "qclif", raw_cols(adjust))]), ])
   d$age_z <- as.numeric(scale(d$age_at_admission))
-  ex <- d[[exposure]]
-  d$expo <- ex - mean(ex[!duplicated(d$unit_name)])
+  d$qclif_centered <- d$qclif - mean(d$qclif[!duplicated(d$unit_name)])
   n0 <- fit("1", d)
   na <- fit(adjust, d)
-  nf <- fit(c(adjust, "expo"), d)
-  ci <- confint(nf, method = "Wald", parm = "beta_")
-  v <- vc(nf)
-  data.frame(
+  row <- data.frame(
     analysis = id, description = desc,
     n_patients = nrow(d), n_deaths = sum(d$died), n_units = length(unique(d$unit_name)),
-    qclif_or_per_point = exp(unname(fixef(nf)["expo"])),
-    lo = exp(ci["expo", 1]), hi = exp(ci["expo", 2]),
-    p = coef(summary(nf))["expo", "Pr(>|z|)"],
     between_unit_var_adjusted = vc(na),
+    mor_adjusted = mor_of_sd(sqrt(vc(na))),
     var_explained_by_covariates = 1 - vc(na) / vc(n0),
-    between_unit_var = v,
-    mor = exp(sqrt(2 * v) * qnorm(0.75)),
-    var_explained_vs_null = 1 - v / vc(n0),
     aic_adjusted = AIC(na),
     row.names = NULL)
+  if (score) {
+    nf <- fit(c(adjust, "qclif_centered"), d)
+    ci <- confint(nf, method = "Wald", parm = "beta_")
+    v <- vc(nf)
+    row <- cbind(row,
+      qclif_or_per_point = exp(unname(fixef(nf)["qclif_centered"])),
+      lo = exp(ci["qclif_centered", 1]), hi = exp(ci["qclif_centered", 2]),
+      p = coef(summary(nf))["qclif_centered", "Pr(>|z|)"],
+      between_unit_var = v,
+      mor = mor_of_sd(sqrt(v)),
+      var_explained_vs_null = 1 - v / vc(n0))
+  }
+  lap(paste("fit:", id))
+  row
 }
 
-swap <- function(terms, from, to) unlist(lapply(terms, function(term) if (term == from) to else term))
 NON_PHYS <- setdiff(ADJUST, PHYS_TERMS)
 # Block descriptions name the physiology set once rather than its spline columns.
 describe <- function(terms)
   paste(c(if (any(terms %in% PHYS_TERMS)) "physiology", setdiff(terms, PHYS_TERMS)),
         collapse = " + ")
 
-# A missing subscore enters as 0, the convention the SOFA total already applies.
-for (col in names(SOFA_COMPONENTS)) df[[paste0(col, "_0")]] <- ifelse(is.na(df[[col]]), 0, df[[col]])
-sens <- rbind(
-  fit_one("primary", "primary adjustment, score_core, all complete cases", df),
-  fit_one("original_adjustment", "age, cci and SOFA only (the original specification)",
-          df, adjust = ADJUST_BASE),
-  fit_one("sofa_total", "SOFA total in place of the physiology terms",
-          df, adjust = c("sofa", NON_PHYS)),
-  fit_one("sofa_components", "the six SOFA subscores in place of the physiology terms, absent = 0",
-          df, adjust = c(paste0(names(SOFA_COMPONENTS), "_0"), NON_PHYS)),
-  fit_one("score_full", "exposure includes proning (score_full)", df, exposure = "score_full"),
-  fit_one("above_floor", "units meeting every score_core denominator floor",
-          df[!df$score_core_low, ]),
-  fit_one("single_icu", "patients cared for in exactly one ICU",
-          df[!is.na(df$n_icus) & df$n_icus == 1, ]),
-  fit_one("no_bilirubin", "physiology without bilirubin",
-          df, adjust = setdiff(ADJUST, PHYS_GROUPS$bilirubin_total)),
-  fit_one("imv_24h", "first IMV episode lasting at least 24 h",
-          df[which(df$first_episode_hours >= MIN_IMV_HOURS), ]))
-if (POOLED) sens <- rbind(sens, do.call(rbind, lapply(levels(df$site), function(s)
-  fit_one(paste0("without_", gsub(" ", "_", tolower(s))), paste("all sites except", s),
-          df[df$site != s, ]))))
-# Stated outright, so a restriction that happens to exclude nobody on this site's data reads as
-# vacuous rather than as applied.
-sens$n_excluded <- sens$n_patients[1] - sens$n_patients
-SENS_COLS <- c("analysis", "description", "n_patients", "n_excluded", "n_deaths", "n_units",
-               "qclif_or_per_point", "lo", "hi", "p", "between_unit_var_adjusted",
-               "var_explained_by_covariates", "between_unit_var", "mor",
-               "var_explained_vs_null", "aic_adjusted")
-write.csv(sens[, SENS_COLS], file.path(out, "sensitivity_analyses.csv"), row.names = FALSE)
-
-# The primary row refits the published specification; if it has drifted from m3 the two
-# exports disagree and neither can be quoted.
-stopifnot(isTRUE(all.equal(sens$qclif_or_per_point[1],
-                           exp(unname(fixef(m3)["qclif_centered"])), tolerance = 1e-6)))
+if (FULL) {
+  # A missing subscore enters as 0, the convention the SOFA total already applies.
+  for (col in names(SOFA_COMPONENTS)) df[[paste0(col, "_0")]] <- ifelse(is.na(df[[col]]), 0, df[[col]])
+  sens <- rbind(
+    fit_one("primary", "primary adjustment, score_core, all complete cases", df),
+    fit_one("sofa_total", "SOFA total in place of the physiology terms",
+            df, adjust = c("sofa", NON_PHYS)),
+    fit_one("sofa_components", "the six SOFA subscores in place of the physiology terms, absent = 0",
+            df, adjust = c(paste0(names(SOFA_COMPONENTS), "_0"), NON_PHYS)),
+    fit_one("single_icu", "patients cared for in exactly one ICU",
+            df[!is.na(df$n_icus) & df$n_icus == 1, ]),
+    fit_one("imv_24h", "first IMV episode lasting at least 24 h",
+            df[which(df$first_episode_hours >= MIN_IMV_HOURS), ]))
+  if (POOLED) sens <- rbind(sens, do.call(rbind, lapply(levels(df$site), function(s)
+    fit_one(paste0("without_", gsub(" ", "_", tolower(s))), paste("all sites except", s),
+            df[df$site != s, ]))))
+  # Stated outright, so a restriction that happens to exclude nobody on this site's data reads as
+  # vacuous rather than as applied.
+  sens$n_excluded <- sens$n_patients[1] - sens$n_patients
+  SENS_COLS <- c("analysis", "description", "n_patients", "n_excluded", "n_deaths", "n_units",
+                 "qclif_or_per_point", "lo", "hi", "p", "between_unit_var_adjusted",
+                 "mor_adjusted", "var_explained_by_covariates", "between_unit_var", "mor",
+                 "var_explained_vs_null", "aic_adjusted")
+  write.csv(sens[, SENS_COLS], file.path(out, "sensitivity_analyses.csv"), row.names = FALSE)
 
 
-# ---- Covariate blocks --------------------------------------------------------
+  # ---- Covariate blocks --------------------------------------------------------
 
-# Cumulative, in a fixed prespecified order, from the original specification to the primary one.
-# Read for how each block moves the between-unit variance and the score's OR; with this few units
-# the order is a presentation choice, not a test.
-POA_BASE <- swap(ADJUST_BASE, "cci", "cci_poa")
-PHYS_BASE <- swap(POA_BASE, "sofa", PHYS_TERMS)
-SETTING <- c("hours_to_intubation", "location_at_intubation", "procedural_within_24h")
-BLOCKS <- list(
-  original                = ADJUST_BASE,
-  poa_charlson            = POA_BASE,
-  physiology              = PHYS_BASE,
-  intubation_setting      = c(PHYS_BASE, SETTING),
-  limited_code_status     = c(PHYS_BASE, SETTING, "limited_code_status"),
-  admission_type          = ADJUST)
-BLOCKS <- lapply(BLOCKS, setdiff, CONSTANT)
-# The first two steps are swaps (cci for cci_poa, then SOFA for physiology); every later step
-# only adds.
-added <- BLOCKS[-(1:2)]
-stopifnot(setequal(BLOCKS[[1]], ADJUST_BASE),
-          setequal(BLOCKS[[2]], POA_BASE),
-          setequal(BLOCKS[[3]], PHYS_BASE),
-          all(mapply(function(a, b) all(a %in% b), added[-length(added)], added[-1])),
-          setequal(BLOCKS[[length(BLOCKS)]], ADJUST))
-blocks <- do.call(rbind, lapply(names(BLOCKS), function(b)
-  fit_one(b, describe(BLOCKS[[b]]), df, adjust = BLOCKS[[b]])))
-blocks <- blocks[, setdiff(SENS_COLS, "n_excluded")]
-names(blocks)[names(blocks) == "analysis"] <- "block"
-write.csv(blocks, file.path(out, "covariate_blocks.csv"), row.names = FALSE)
-stopifnot(isTRUE(all.equal(blocks$qclif_or_per_point[nrow(blocks)],
-                           sens$qclif_or_per_point[1], tolerance = 1e-6)))
+  # Cumulative, in a fixed prespecified order, ending at the primary adjustment; covariates only,
+  # no score. Read for how each step moves the between-unit variance; with this few units the
+  # order is a presentation choice, not a test. Site comes first when pooled, so its row is the
+  # share of the unit variance that is between sites.
+  STEPS <- list(
+    site                = if (POOLED) "site",
+    patient             = c("age_z", "cci_poa"),
+    physiology          = PHYS_TERMS,
+    intubation_setting  = c("hours_to_intubation", "location_at_intubation",
+                            "procedural_within_24h"),
+    limited_code_status = "limited_code_status",
+    admission_type      = "admission_type")
+  STEPS <- Filter(length, lapply(STEPS, setdiff, CONSTANT))
+  BLOCKS <- setNames(Reduce(c, STEPS, accumulate = TRUE), names(STEPS))
+  # Every primary term is claimed by exactly one step, so the last block IS the primary model.
+  stopifnot(!anyDuplicated(unlist(STEPS)), setequal(BLOCKS[[length(BLOCKS)]], ADJUST))
+  blocks <- do.call(rbind, lapply(names(BLOCKS), function(b)
+    fit_one(b, describe(BLOCKS[[b]]), df, adjust = BLOCKS[[b]], score = FALSE)))
+  names(blocks)[names(blocks) == "analysis"] <- "block"
+  write.csv(blocks, file.path(out, "covariate_blocks.csv"), row.names = FALSE)
+}
 
 
 # ---- Figures -----------------------------------------------------------------
@@ -615,6 +626,7 @@ er <- ggplot(curve, aes(x = qclif, y = fit)) +
         plot.background = element_rect(fill = PAPER, colour = NA))
 
 ggsave(file.path(out, "exposure_response.png"), er, width = 7.5, height = 4.5, dpi = 300)
+lap("figures")
 
 writeLines(c(
   "# Figure captions",
@@ -681,17 +693,20 @@ writeLines(c(
   "ICUs, so they are descriptive only. No p-value is reported for the score itself, which",
   "defines the strata. Cells are NOT small-cell suppressed: some categorical levels hold very",
   "few patients, so the table needs a suppression pass before it leaves the site.",
-  "",
-  "**covariate_blocks.csv** — Cumulative covariate blocks, from the original adjustment (age,",
-  "Charlson comorbidity index, SOFA) to the primary one, in a prespecified order: the",
-  "present-on-admission Charlson index in place of the all-diagnosis one; then physiology",
-  "at intubation in place of SOFA; then admission-to-intubation time, location at",
-  "intubation and a procedural stay in the 24 h before intubation; then limited code status (a DNR-type order at or before intubation;",
-  "Full and no recorded order are one level, because recording varies by year and unit);",
-  "then admission type. Each row gives the between-unit variance with the covariates alone",
-  "and the share of the unadjusted variance they remove, then the score's odds ratio per point",
-  "and the between-unit variance with the score added. With this few units the order is a",
-  "presentation choice, not a test."
+  if (FULL) c("",
+  "**covariate_blocks.csv** — Cumulative covariate blocks ending at the primary adjustment, in a",
+  "prespecified order:",
+  if (POOLED) "site; then" else NULL,
+  "age and the present-on-admission Charlson comorbidity index; then physiology at intubation;",
+  "then admission-to-intubation time, location at intubation and a procedural stay in the 24 h",
+  "before intubation; then limited code status (a DNR-type order at or before intubation; Full",
+  "and no recorded order are one level, because recording varies by year and unit); then",
+  "admission type. Each row gives the between-unit variance and median odds ratio with those",
+  "covariates and no score, and the share of the unadjusted between-unit variance they remove.",
+  "With this few units the order is a presentation choice, not a test.")
 ), file.path(out, "captions.md"))
+
+TIMES[nrow(TIMES) + 1, ] <- list("total", sum(TIMES$seconds))
+write.csv(TIMES, file.path(out, "timings.csv"), row.names = FALSE)
 
 cat(sprintf("\nWrote %s\n", out))

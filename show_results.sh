@@ -35,7 +35,7 @@ fi
 SHARE="output/${SITE}/final_no_phi"
 MODEL="$SHARE/08_outcome_model"
 [[ "$COHORT" == all ]] || MODEL="${MODEL}_${COHORT}"
-SUMMARIES=(icc.csv covariate_blocks.csv sensitivity_analyses.csv model_coefficients.csv)
+SUMMARIES=(icc.csv covariate_blocks.csv sensitivity_analyses.csv model_coefficients.csv timings.csv)
 
 FILES=()
 if [[ "$SITE" == pooled ]]; then

@@ -45,7 +45,7 @@ deliberately out of scope.
 
 ### Two scores, and why
 
-`score_core` is the **primary exposure**; `score_full` is a prespecified **sensitivity analysis**.
+`score_core` is the **primary exposure**; `score_full` is computed alongside it on the unit panel (stage 8 no longer fits it as a sensitivity row).
 
 ```
 score_core = 100 x mean(ltvv_rate, sat_rate, sbt_rate)
@@ -179,7 +179,7 @@ Stage 0 re-diffs `definitions/` against the pinned upstream commit and fails lou
 | `output/<site>/final_no_phi/unit_period_panel.csv` | Secondary, one row per ICU x period | Yes, site-internal |
 | `output/<site>/final_no_phi/*_anonymized.csv` | Both, with `location_name` stripped (`Unit 1..n` only) | **Yes — use these externally** |
 | `output/<site>/final_no_phi/verification.json` | Equivalence check results | Yes |
-| `output/<site>/final_no_phi/08_outcome_model/` (`_<cohort>/` for a restricted `CLIF_COHORT`) | Model coefficients, ICC/MOR (with variance LRT and MOR CI), per-unit effects, covariate blocks, sensitivity analyses, Table 1, three figures and `captions.md` | Site-internal; Table 1 still needs a small-cell pass |
+| `output/<site>/final_no_phi/08_outcome_model/` (`_<cohort>/` for a restricted `CLIF_COHORT`) | Model coefficients, ICC/MOR (with variance LRT and MOR CI), per-unit effects, Table 1, three figures, `captions.md` and `timings.csv`; covariate blocks and sensitivity analyses for the primary cohort (`early_nonop`) only | Site-internal; Table 1 still needs a small-cell pass |
 | `output/<site>/final_no_phi/07b_covariate_probe/` | Coverage and crude mortality of candidate case-mix covariates, overall, by `unit_id` and by intubation year; counts below `small_cell_threshold` (`.clif-prepush.json`) suppressed | Site-internal |
 | `output/pooled/` | Multi-site stack from stage 7c: `intermediate_phi/analysis/` (all patients, never shared), `intermediate_phi/site_key.json` (letter-to-site key, never shared), `final_no_phi/unit_panel.parquet`, `unit_panel_anonymized.csv`, `pooled_provenance.json`, `08_outcome_model/` | `final_no_phi/` site-anonymized |
 | `output/<site>/final_no_phi/logs/` | Per-step logs, aggregate only | Yes |
@@ -259,10 +259,11 @@ aggregate files under `final_no_phi/` (the probe log, the pooling log, the model
 leaves out the per-unit tables, whose counts can fall below the small-cell threshold.
 
 The outcome model is a separate R step, run after the Python pipeline. It reads the site from
-`CLIF_SITE` (default `uchicago`):
+`CLIF_SITE` (default `uchicago`) and the outcome cohort from `CLIF_COHORT` (default `all`); the
+sensitivity analyses and covariate blocks run only for the primary cohort, `early_nonop`:
 
 ```bash
-Rscript code/08_outcome_model.R
+CLIF_COHORT=early_nonop Rscript code/08_outcome_model.R
 ```
 
 To redraw only the caterpillar plot from a finished stage 8 (no refit), run
@@ -283,25 +284,28 @@ once on the stack:
 ```bash
 ./run_scores.sh --site site_one --probe                     # and each other member
 ./run_pooled.sh --members site_one,site_two,site_three      # order sets Site A, B, ...
-./show_results.sh --site pooled
-# restricted outcome cohorts, refit on the existing pooled data:
-./run_pooled.sh --model-only --cohort early_nonop,early_nonop_hypoxemia
-./show_results.sh --site pooled --cohort early_nonop
+./show_results.sh --site pooled --cohort early_nonop        # the primary cohort
+# refit one cohort on the existing pooled data:
+./run_pooled.sh --model-only --cohort early_nonop
 ```
 
 ```powershell
 .\run_scores.ps1 -Site site_one -Probe
 .\run_pooled.ps1 -Members site_one,site_two,site_three
-.\show_results.ps1 -Site pooled
-.\run_pooled.ps1 -ModelOnly -Cohort early_nonop,early_nonop_hypoxemia
 .\show_results.ps1 -Site pooled -Cohort early_nonop
+.\run_pooled.ps1 -ModelOnly -Cohort early_nonop
 ```
 
 `run_pooled` writes `sites/pooled.json` from `--members` (or uses the existing one), checks that
 R and its packages load before the long run, then runs stage 7c and the pooled stage 8;
-`--pool-only` stops after 7c, `--model-only` skips it, and `--cohort` fits one or more of stage
-8's outcome cohorts (`all`, `early_nonop`, `early_nonop_hypoxemia`; definitions in
-`docs/METHODS.md`), each into its own `08_outcome_model_<cohort>/`. Run by hand, the steps are
+`--pool-only` stops after 7c, `--model-only` skips it, and `--cohort` picks which of stage 8's
+outcome cohorts to fit (default all three: `all`, `early_nonop`, `early_nonop_hypoxemia`;
+definitions in `docs/METHODS.md`), each into its own `08_outcome_model_<cohort>/`. `early_nonop`
+is the primary cohort and the only one fit with the sensitivity analyses and covariate blocks.
+The cohorts run in parallel, each logging to `output/pooled/final_no_phi/logs/08_outcome_model_<cohort>.log`
+rather than the terminal (Windows splits errors into a separate `.err.log`), and each writes
+`timings.csv`, the seconds spent in each section. Run by
+hand, the steps are
 `code/07c_pool_sites.py` followed by `CLIF_SITE=pooled CLIF_COHORT=<cohort> Rscript
 code/08_outcome_model.R`.
 
@@ -350,7 +354,7 @@ every run.
 | 7b | `code/07b_covariate_probe.py` | `final_no_phi/07b_covariate_probe/covariate_coverage.csv` + `logs/07b_covariate_probe.log` — on demand: coverage of candidate covariates (location at intubation, recent procedural stay, admission type, pre-intubation code status, admission-to-intubation time, Charlson conditions with and without present-on-admission, primary-diagnosis coverage and ICD-10 chapter) in the model sample, plus which hospital each ICU sits in (anonymized) |
 | 7c | `code/07c_pool_sites.py` | `output/pooled/` — on demand, multi-site: stacks member sites' stage-7 patient rows and unit panels (site-prefixed keys, anonymized labels) after checking versions, build code, required columns and reference levels; `./run_pooled.sh` runs it and then `CLIF_SITE=pooled Rscript code/08_outcome_model.R` |
 | 6 | `code/06_compare_tiers.py` | `tier_comparison/` — on demand, proves a cold build reproduces the cached-tier panel exactly |
-| 8 | `code/08_outcome_model.R` | `final_no_phi/08_outcome_model/` — the multilevel outcome model (R), adjusted for physiology at intubation: coefficients, ICC/MOR with a variance LRT and profile CI, per-unit effects, cumulative covariate blocks, Table 1, sensitivity analyses, three figures. Run after the Python pipeline |
+| 8 | `code/08_outcome_model.R` | `final_no_phi/08_outcome_model/` — the multilevel outcome model (R), adjusted for physiology at intubation: coefficients, ICC/MOR with a variance LRT and profile CI, per-unit effects, Table 1, three figures; cumulative covariate blocks and sensitivity analyses for the primary cohort (`CLIF_COHORT=early_nonop`). Run after the Python pipeline |
 
 Stages 0-5 and 7 run on every build via the runner (`--from` resumes partway). Stage 7b is a
 diagnostic, run on demand after stage 7 (`./run_scores.sh --site uchicago --probe`, or

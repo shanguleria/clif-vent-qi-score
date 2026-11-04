@@ -23,7 +23,7 @@ if ($Cohort -notmatch '^[A-Za-z0-9_]+$') { Write-Error "bad -Cohort: '$Cohort'" 
 $Share = "output\$Site\final_no_phi"
 $Model = "$Share\08_outcome_model"
 if ($Cohort -ne "all") { $Model = "${Model}_$Cohort" }
-$Summaries = @("icc.csv", "covariate_blocks.csv", "sensitivity_analyses.csv", "model_coefficients.csv")
+$Summaries = @("icc.csv", "covariate_blocks.csv", "sensitivity_analyses.csv", "model_coefficients.csv", "timings.csv")
 
 $Files = @()
 if ($Site -eq "pooled") {

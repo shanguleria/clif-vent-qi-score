@@ -5,8 +5,9 @@
 #
 # --members a,b,c  write sites/pooled.json with these members (order sets Site A, B, ...);
 #                  without it, the existing sites/pooled.json is used
-# --cohort a,b     stage-8 cohorts to fit, one after another (default: all). Names are the
-#                  COHORTS in code/08_outcome_model.R, e.g. all,early_nonop,early_nonop_hypoxemia
+# --cohort a,b     stage-8 cohorts to fit, one after another (default: every COHORTS entry in
+#                  code/08_outcome_model.R, all,early_nonop,early_nonop_hypoxemia); only early_nonop
+#                  gets the sensitivity analyses and covariate blocks
 # --pool-only      stop after stage 7c
 # --model-only     skip stage 7c and refit stage 8 on the existing pooled data
 #
@@ -15,7 +16,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 MEMBERS=""
-COHORTS="all"
+COHORTS="all,early_nonop,early_nonop_hypoxemia"
 POOL_ONLY=0
 MODEL_ONLY=0
 while [[ $# -gt 0 ]]; do
@@ -92,11 +93,31 @@ if [[ "$POOL_ONLY" -eq 1 ]]; then
   exit 0
 fi
 
+# Cohorts are independent fits on the same data, so they run side by side, each to its own log.
+LOGS="output/pooled/final_no_phi/logs"
+mkdir -p "$LOGS"
+PIDS=()
+echo ""; echo "========== 08_outcome_model (pooled, cohorts in parallel) =========="
 for c in "${COHORT_LIST[@]}"; do
-  echo ""; echo "========== 08_outcome_model (pooled, cohort $c) =========="
-  CLIF_SITE=pooled CLIF_COHORT="$c" Rscript code/08_outcome_model.R || {
-    echo ">>> stage 8 failed for cohort $c" >&2; exit 1; }
+  CLIF_SITE=pooled CLIF_COHORT="$c" Rscript code/08_outcome_model.R > "$LOGS/08_outcome_model_$c.log" 2>&1 &
+  PIDS+=($!)
+  echo "  started $c -> $LOGS/08_outcome_model_$c.log"
 done
+FAILED=()
+for i in "${!PIDS[@]}"; do
+  c="${COHORT_LIST[$i]}"
+  if wait "${PIDS[$i]}"; then
+    echo "  finished $c ($(fmt $((SECONDS - T0))) since start)"
+  else
+    FAILED+=("$c")
+  fi
+done
+if [[ ${#FAILED[@]} -gt 0 ]]; then
+  for c in "${FAILED[@]}"; do
+    echo ">>> stage 8 failed for cohort $c; its log: tail -n 40 $LOGS/08_outcome_model_$c.log" >&2
+  done
+  exit 1
+fi
 
 echo ""
 echo "=== done in $(fmt $((SECONDS - T0))) — cohorts: ${COHORT_LIST[*]} ==="
