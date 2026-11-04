@@ -740,11 +740,20 @@ writeLines(c(
 # adjusted MOR, and m3's adds nothing its point estimate does not. Elsewhere the columns are NA.
 # A failure is reported, not fatal.
 # CLIF_FAST profiles only just past the 95% cutoff, in steps of a third of it rather than an
-# eighth, so the interval is spline-interpolated from far fewer refits.
-PROFILE_ARGS <- if (FAST) list(alphamax = 0.04, delta.cutoff = 1 / 3) else list()
+# eighth, so the interval is spline-interpolated from far fewer refits. It also caps each profile
+# refit at PROFILE_MAXFUN evaluations (bobyqa's own default for this many parameters, a tenth of
+# the cap on the main fits, which still run to convergence). A refit stopped by the cap has not
+# reached its minimum, so its deviance is too high and the interval too narrow; every warning
+# raised while profiling is counted and reported beside the interval.
+PROFILE_MAXFUN <- 2e4
+PROFILE_ARGS <- if (FAST) list(alphamax = 0.04, delta.cutoff = 1 / 3,
+                               control = list(maxfun = PROFILE_MAXFUN)) else list()
+PROFILE_WARNINGS <- 0L
 sd_ci <- function(m) tryCatch(
-  unname(do.call(confint, c(list(m, parm = "theta_", method = "profile", oldNames = FALSE),
-                            PROFILE_ARGS))[1, ]),
+  withCallingHandlers(
+    unname(do.call(confint, c(list(m, parm = "theta_", method = "profile", oldNames = FALSE),
+                              PROFILE_ARGS))[1, ]),
+    warning = function(w) PROFILE_WARNINGS <<- PROFILE_WARNINGS + 1L),
   error = function(e) {
     message("profile interval for the unit SD failed: ", conditionMessage(e))
     c(NA_real_, NA_real_)
@@ -783,7 +792,10 @@ ci_sd <- matrix(NA_real_, nrow = 3, ncol = 2)
 write_outputs(ci_sd, if (PRIMARY) "profile pending" else "not computed for this cohort")
 if (PRIMARY) {
   ci_sd[icc$model == "m2", ] <- sd_ci(m2); lap("profile CI m2")
-  write_outputs(ci_sd, if (FAST) "profile, coarse grid (CLIF_FAST)" else "profile")
+  write_outputs(ci_sd, sprintf("%s; %d warning(s) while profiling",
+                               if (FAST) sprintf("profile, coarse grid, maxfun %g (CLIF_FAST)",
+                                                 PROFILE_MAXFUN) else "profile",
+                               PROFILE_WARNINGS))
 }
 
 TIMES[nrow(TIMES) + 1, ] <- list("total", sum(TIMES$seconds))

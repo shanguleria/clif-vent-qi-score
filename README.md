@@ -274,7 +274,8 @@ Two switches trade completeness for speed. They write to a suffixed folder
 
 - `CLIF_FAST=1` fits m1–m3 and writes the unit effects, figures, `icc.csv` and
   `abstract_numbers.csv`. It skips Table 1, the sensitivity analyses and the covariate blocks, and
-  profiles the primary cohort's MOR interval on a coarser grid.
+  profiles the primary cohort's MOR interval on a coarser grid, with each profile refit capped at
+  20,000 evaluations (the main fits still run to convergence).
 - `CLIF_ADJUST=original` drops race, BMI and CRRT from the adjustment, so stage-7 data built
   before they were added can still be fit.
 
